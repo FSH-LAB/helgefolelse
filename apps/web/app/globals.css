@@ -1,0 +1,157 @@
+@import "tailwindcss";
+
+@theme inline {
+  --font-numerals: var(--font-display);
+}
+
+:root {
+  /* Overwritten every frame by the tide; these are the Monday defaults. */
+  --air: #101d22;
+  --surface: #0a3a40;
+  --deep: #072226;
+  --staff: 132px;
+
+  --foam: #e9f6f2;
+  --ink: #05201f;
+}
+
+html {
+  color-scheme: dark;
+  height: 100%;
+}
+
+body {
+  height: 100%;
+  margin: 0;
+  color: var(--foam);
+  background: var(--air);
+  font-family: var(--font-display), ui-sans-serif, system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* ---- The sea --------------------------------------------------------- */
+
+.scene {
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+  background: var(--air);
+}
+
+.sea {
+  position: absolute;
+  inset: 0;
+  display: block;
+}
+
+.water {
+  fill: url(#depth);
+}
+
+/* A lit edge where the air meets the water. */
+.waterline {
+  fill: none;
+  stroke: var(--foam);
+  stroke-width: 1.5;
+  stroke-opacity: 0.65;
+  filter: drop-shadow(0 0 10px rgb(233 246 242 / 0.35));
+}
+
+/* ---- Depth staff ----------------------------------------------------- */
+
+/* The rule ties the graduations together so they do not strand at the edge. */
+.staff-rule {
+  stroke: var(--foam);
+  stroke-opacity: 0.16;
+  stroke-width: 1;
+}
+
+.staff-minor {
+  stroke: var(--foam);
+  stroke-opacity: 0.22;
+  stroke-width: 1;
+}
+
+.mark line {
+  stroke: var(--foam);
+  stroke-opacity: 0.5;
+  stroke-width: 1.5;
+}
+
+.mark--lit line {
+  stroke-opacity: 1;
+}
+
+/* ---- The numeral ----------------------------------------------------- */
+
+.readout {
+  font-family: var(--font-display), ui-sans-serif, system-ui, sans-serif;
+  font-weight: 800;
+  font-variation-settings: "wdth" 96;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.04em;
+}
+
+/* Hollow while it is still above the surface. */
+.readout--air {
+  fill: none;
+  stroke: var(--foam);
+  stroke-opacity: 0.85;
+  paint-order: stroke;
+}
+
+/* Solid the moment the water reaches it. */
+.readout--sea {
+  fill: var(--ink);
+  fill-opacity: 0.92;
+}
+
+/* ---- Frame ----------------------------------------------------------- */
+
+.frame {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: clamp(1.5rem, 3.5vw, 2.5rem);
+  padding-left: calc(var(--staff) + clamp(0.5rem, 1.5vw, 1.5rem));
+  pointer-events: none;
+}
+
+.frame > * {
+  pointer-events: auto;
+}
+
+.chrome {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  text-shadow: 0 1px 14px rgb(5 32 31 / 0.6);
+}
+
+.wordmark {
+  margin: 0;
+  font-size: clamp(1rem, 2.2vw, 1.25rem);
+  font-weight: 700;
+  font-variation-settings: "wdth" 92;
+  letter-spacing: -0.01em;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .waterline {
+    filter: none;
+  }
+}
