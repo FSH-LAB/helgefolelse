@@ -16,12 +16,14 @@ Open [http://localhost:3000](http://localhost:3000). Run commands from the repos
 
 ## Commands
 
-| Command | Purpose |
-| --- | --- |
-| `pnpm dev` | Start the development server |
-| `pnpm build` | Build the web app for production |
-| `pnpm lint` | Run ESLint |
-| `pnpm typecheck` | Run TypeScript checks |
+| Command                 | Purpose                           |
+| ----------------------- | --------------------------------- |
+| `pnpm dev`              | Start the development server      |
+| `pnpm build`            | Build the web app for production  |
+| `pnpm lint`             | Run ESLint                        |
+| `pnpm typecheck`        | Run TypeScript checks             |
+| `pnpm format:check`     | Check formatting for CI           |
+| `pnpm format`           | Format supported files            |
 | `pnpm --filter web dev` | Run only the web app's dev script |
 
 The root scripts use Turborepo to run tasks across workspaces. Currently there is one app, `web`; there are no shared packages or separate backend yet.

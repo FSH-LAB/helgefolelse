@@ -31,7 +31,10 @@ const TAU = Math.PI * 2;
 function surfaceY(x: number, w: number, h: number, level: number, t: number) {
   let y = level;
   for (const { amplitude, periods, cyclesPerSecond } of WAVES) {
-    y += amplitude * h * Math.sin((x / w) * periods * TAU + t * cyclesPerSecond * TAU);
+    y +=
+      amplitude *
+      h *
+      Math.sin((x / w) * periods * TAU + t * cyclesPerSecond * TAU);
   }
   return y;
 }
@@ -100,7 +103,8 @@ export default function Tide({ initial }: { initial: Reading }) {
   const value = reading.value * swept;
   const [whole, fraction] = value.toFixed(4).split(".");
   const tide = tideFor(value, reading.trend);
-  const lit = BAND_ORDER[Math.min(BAND_ORDER.length - 1, Math.floor(value / 20))];
+  const lit =
+    BAND_ORDER[Math.min(BAND_ORDER.length - 1, Math.floor(value / 20))];
 
   const narrow = !!box && box.w < 560;
   const staff = narrow
@@ -197,11 +201,19 @@ export default function Tide({ initial }: { initial: Reading }) {
           >
             <tspan>{whole}</tspan>
             {/* The small parts get a finer outline, or their counters fill in. */}
-            <tspan style={{ fontSize: numeralSize * 0.26, strokeWidth: numeralSize * 0.009 }}>
+            <tspan
+              style={{
+                fontSize: numeralSize * 0.26,
+                strokeWidth: numeralSize * 0.009,
+              }}
+            >
               .{fraction}
             </tspan>
             <tspan
-              style={{ fontSize: numeralSize * 0.15, strokeWidth: numeralSize * 0.007 }}
+              style={{
+                fontSize: numeralSize * 0.15,
+                strokeWidth: numeralSize * 0.007,
+              }}
               dx={numeralSize * 0.07}
             >
               %
@@ -217,11 +229,13 @@ export default function Tide({ initial }: { initial: Reading }) {
           >
             <tspan>{whole}</tspan>
             <tspan style={{ fontSize: numeralSize * 0.26 }}>.{fraction}</tspan>
-            <tspan style={{ fontSize: numeralSize * 0.15 }} dx={numeralSize * 0.07}>
+            <tspan
+              style={{ fontSize: numeralSize * 0.15 }}
+              dx={numeralSize * 0.07}
+            >
               %
             </tspan>
           </text>
-
         </svg>
       ) : null}
 
