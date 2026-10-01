@@ -18,7 +18,7 @@ on:
         description: Environment to promote to
         required: true
         type: choice
-        options: [staging, production]
+        options: [staging, production, dev]
       sha:
         description: Published 40-character commit SHA
         required: true
