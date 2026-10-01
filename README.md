@@ -28,6 +28,23 @@ Open [http://localhost:3000](http://localhost:3000). Run commands from the repos
 
 The root scripts use Turborepo to run tasks across workspaces. Currently there is one app, `web`; there are no shared packages or separate backend yet.
 
+## Local image security scan
+
+The delivery workflow scans the production image with Trivy before publishing it. To run the same scan locally on macOS, install [Trivy](https://trivy.dev/latest/getting-started/installation/) and make sure Docker is running:
+
+```sh
+brew install trivy
+docker build --pull -f apps/web/Dockerfile -t helgefolelse-web:local .
+trivy image \
+	--scanners vuln,secret \
+	--severity HIGH,CRITICAL \
+	--ignore-unfixed \
+	--exit-code 1 \
+	helgefolelse-web:local
+```
+
+The command exits with status `1` when a HIGH or CRITICAL finding with an available fix is detected. Advisories without a published fix are reported but ignored, matching CI. Trivy downloads its vulnerability database on the first scan; use `trivy image --download-db-only` to update it separately.
+
 ## Delivery
 
 CI checks PRs and pushes to `main`. After a successful push-to-main CI run, the image workflow builds the web image, blocks publication on high or critical Trivy findings, tags it with the commit SHA, and pushes it to GHCR. The same image digest is then mirrored to Google Artifact Registry and deployed to the `dev` Cloud Run service. CI and infrastructure provisioning are separate from application deployment.
