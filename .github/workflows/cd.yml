@@ -5,6 +5,7 @@ on:
     workflows: [CI]
     types: [completed]
     branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -13,31 +14,35 @@ permissions:
 jobs:
   publish:
     if: >-
-      github.event.workflow_run.conclusion == 'success' &&
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.event == 'push' &&
-      github.event.workflow_run.head_repository.full_name == github.repository
+      github.event.workflow_run.head_repository.full_name == github.repository)
     outputs:
-      sha: ${{ github.event.workflow_run.head_sha }}
+      sha: ${{ steps.sha.outputs.sha }}
       digest: ${{ steps.push.outputs.digest }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     concurrency:
-      group: web-image-${{ github.event.workflow_run.head_sha }}
+      group: web-image-${{ github.event.workflow_run.head_sha || github.sha }}
       cancel-in-progress: false
     steps:
+      - name: Resolve commit SHA
+        id: sha
+        run: echo "sha=${{ github.event.workflow_run.head_sha || github.sha }}" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.workflow_run.head_sha }}
+          ref: ${{ steps.sha.outputs.sha }}
           persist-credentials: false
       - name: Build image
         id: image
         env:
-          SHA: ${{ github.event.workflow_run.head_sha }}
+          SHA: ${{ steps.sha.outputs.sha }}
         run: ./.github/scripts/build-image.sh
       - name: Scan image
         uses: aquasecurity/trivy-action@0.35.0
         with:
-          image-ref: ${{ steps.image.outputs.name }}:${{ github.event.workflow_run.head_sha }}
+          image-ref: ${{ steps.image.outputs.name }}:${{ steps.sha.outputs.sha }}
           format: table
           exit-code: "1"
           severity: HIGH,CRITICAL
@@ -51,7 +56,7 @@ jobs:
         id: push
         env:
           IMAGE: ${{ steps.image.outputs.name }}
-          SHA: ${{ github.event.workflow_run.head_sha }}
+          SHA: ${{ steps.sha.outputs.sha }}
         run: ./.github/scripts/push-image.sh
 
   deploy-dev:
