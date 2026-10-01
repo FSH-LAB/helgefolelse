@@ -14,15 +14,14 @@ COPY --from=pruner /app/out/pnpm-workspace.yaml ./pnpm-workspace.yaml
 RUN pnpm install --frozen-lockfile
 COPY --from=pruner /app/out/full/ ./
 RUN pnpm turbo run build --filter=web && \
-    if [ -d apps/web/public ]; then cp -R apps/web/public apps/web/.next/standalone/apps/web/public; fi
+    if [ -d apps/web/public ]; then cp -R apps/web/public apps/web/.next/standalone/apps/web/public; fi && \
+    mkdir -p apps/web/.next/standalone/apps/web/.next/cache
 
-FROM node:24.20.0-slim AS runner
+FROM gcr.io/distroless/nodejs24-debian13:nonroot AS runner
 WORKDIR /app
 ENV NODE_ENV=production PORT=8080 HOSTNAME=0.0.0.0
-RUN groupadd --system --gid 1001 nodejs && useradd --system --uid 1001 --gid nodejs nextjs
-COPY --from=builder --chown=nextjs:nodejs /app/apps/web/.next/standalone ./
-COPY --from=builder --chown=nextjs:nodejs /app/apps/web/.next/static ./apps/web/.next/static
-RUN mkdir -p apps/web/.next/cache && chown -R nextjs:nodejs apps/web/.next
-USER nextjs
+COPY --from=builder --chown=65532:65532 /app/apps/web/.next/standalone ./
+COPY --from=builder --chown=65532:65532 /app/apps/web/.next/static ./apps/web/.next/static
+USER 65532:65532
 EXPOSE 8080
-CMD ["node", "apps/web/server.js"]
+CMD ["apps/web/server.js"]

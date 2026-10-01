@@ -1,0 +1,123 @@
+name: Deploy web
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        required: true
+        type: string
+      sha:
+        required: true
+        type: string
+      digest:
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Environment to promote to
+        required: true
+        type: choice
+        options: [staging, production]
+      sha:
+        description: Published 40-character commit SHA
+        required: true
+        type: string
+      digest:
+        description: GHCR sha256 digest from the image workflow
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  packages: read
+  id-token: write
+
+concurrency:
+  group: deploy-web-${{ inputs.environment }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: ${{ inputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify release
+        id: release
+        env:
+          SHA: ${{ inputs.sha }}
+          DIGEST: ${{ inputs.digest }}
+        run: |
+          if [[ "$GITHUB_REF" != refs/heads/main ]] ||
+             [[ ! "$SHA" =~ ^[0-9a-f]{40}$ ]] ||
+             [[ ! "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] ||
+             ! git merge-base --is-ancestor "$SHA" origin/main; then
+            echo 'Release must be a published commit on main' >&2
+            exit 1
+          fi
+          echo "source=ghcr.io/${GITHUB_REPOSITORY,,}-web@${DIGEST}" >> "$GITHUB_OUTPUT"
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Verify published image
+        env:
+          SOURCE: ${{ steps.release.outputs.source }}
+          SHA: ${{ inputs.sha }}
+          DIGEST: ${{ inputs.digest }}
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY,,}-web"
+          published_digest="$(docker buildx imagetools inspect "$image:$SHA" --format '{{ .Manifest.Digest }}')"
+          test "$published_digest" = "$DIGEST"
+          docker pull "$SOURCE"
+          revision="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$SOURCE")"
+          test "$revision" = "$SHA"
+      - uses: google-github-actions/auth@v3
+        id: auth
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+          token_format: access_token
+      - uses: google-github-actions/setup-gcloud@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ vars.GCP_REGION }}-docker.pkg.dev
+          username: oauth2accesstoken
+          password: ${{ steps.auth.outputs.access_token }}
+      - name: Mirror image to Artifact Registry
+        id: artifact
+        env:
+          SOURCE: ${{ steps.release.outputs.source }}
+          SHA: ${{ inputs.sha }}
+          PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+          REGION: ${{ vars.GCP_REGION }}
+          REPOSITORY: ${{ vars.GAR_REPOSITORY }}
+        run: |
+          target="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPOSITORY}/web"
+          docker tag "$SOURCE" "$target:$SHA"
+          docker push "$target:$SHA"
+          digest="$(docker buildx imagetools inspect "$target:$SHA" --format '{{ .Manifest.Digest }}')"
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          echo "image=$target@$digest" >> "$GITHUB_OUTPUT"
+      - name: Deploy Cloud Run service
+        env:
+          IMAGE: ${{ steps.artifact.outputs.image }}
+          PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+          REGION: ${{ vars.GCP_REGION }}
+          SERVICE: ${{ vars.CLOUD_RUN_SERVICE }}
+        run: |
+          gcloud run deploy "$SERVICE" --image "$IMAGE" \
+            --project "$PROJECT_ID" --region "$REGION" --quiet
+          url="$(gcloud run services describe "$SERVICE" \
+            --project "$PROJECT_ID" --region "$REGION" \
+            --format='value(status.url)')"
+          curl --fail --show-error --silent --retry 5 --retry-delay 2 \
+            --retry-all-errors "$url/api/health"
