@@ -17,11 +17,14 @@ RUN pnpm turbo run build --filter=web && \
     if [ -d apps/web/public ]; then cp -R apps/web/public apps/web/.next/standalone/apps/web/public; fi && \
     mkdir -p apps/web/.next/standalone/apps/web/.next/cache
 
-FROM gcr.io/distroless/nodejs24-debian13:nonroot AS runner
+FROM node:24.20.0-slim AS runner
 WORKDIR /app
 ENV NODE_ENV=production PORT=8080 HOSTNAME=0.0.0.0
-COPY --from=builder --chown=65532:65532 /app/apps/web/.next/standalone ./
-COPY --from=builder --chown=65532:65532 /app/apps/web/.next/static ./apps/web/.next/static
-USER 65532:65532
+RUN apt-get update \
+    && apt-get upgrade -y \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=builder --chown=node:node /app/apps/web/.next/standalone ./
+COPY --from=builder --chown=node:node /app/apps/web/.next/static ./apps/web/.next/static
+USER node
 EXPOSE 8080
 CMD ["apps/web/server.js"]
