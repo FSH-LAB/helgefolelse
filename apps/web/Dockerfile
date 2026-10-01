@@ -17,14 +17,17 @@ RUN pnpm turbo run build --filter=web && \
     if [ -d apps/web/public ]; then cp -R apps/web/public apps/web/.next/standalone/apps/web/public; fi && \
     mkdir -p apps/web/.next/standalone/apps/web/.next/cache
 
-FROM node:24.20.0-slim AS runner
+FROM debian:13-slim AS runner
 WORKDIR /app
 ENV NODE_ENV=production PORT=8080 HOSTNAME=0.0.0.0
 RUN apt-get update \
     && apt-get upgrade -y \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && useradd --system --uid 1000 --create-home node \
     && rm -rf /var/lib/apt/lists/*
+COPY --from=base /usr/local/bin/node /usr/local/bin/node
 COPY --from=builder --chown=node:node /app/apps/web/.next/standalone ./
 COPY --from=builder --chown=node:node /app/apps/web/.next/static ./apps/web/.next/static
 USER node
 EXPOSE 8080
-CMD ["apps/web/server.js"]
+CMD ["node", "apps/web/server.js"]
