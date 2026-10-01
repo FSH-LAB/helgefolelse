@@ -53,15 +53,7 @@ jobs:
         env:
           SHA: ${{ inputs.sha }}
           DIGEST: ${{ inputs.digest }}
-        run: |
-          if [[ "$GITHUB_REF" != refs/heads/main ]] ||
-             [[ ! "$SHA" =~ ^[0-9a-f]{40}$ ]] ||
-             [[ ! "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] ||
-             ! git merge-base --is-ancestor "$SHA" origin/main; then
-            echo 'Release must be a published commit on main' >&2
-            exit 1
-          fi
-          echo "source=ghcr.io/${GITHUB_REPOSITORY,,}-web@${DIGEST}" >> "$GITHUB_OUTPUT"
+        run: ./.github/scripts/verify-release.sh
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -72,13 +64,7 @@ jobs:
           SOURCE: ${{ steps.release.outputs.source }}
           SHA: ${{ inputs.sha }}
           DIGEST: ${{ inputs.digest }}
-        run: |
-          image="ghcr.io/${GITHUB_REPOSITORY,,}-web"
-          published_digest="$(docker buildx imagetools inspect "$image:$SHA" --format '{{ .Manifest.Digest }}')"
-          test "$published_digest" = "$DIGEST"
-          docker pull "$SOURCE"
-          revision="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$SOURCE")"
-          test "$revision" = "$SHA"
+        run: ./.github/scripts/verify-published-image.sh
       - uses: google-github-actions/auth@v3
         id: auth
         with:
@@ -100,24 +86,11 @@ jobs:
           PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
           REGION: ${{ vars.GCP_REGION }}
           REPOSITORY: ${{ vars.GAR_REPOSITORY }}
-        run: |
-          target="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPOSITORY}/web"
-          docker tag "$SOURCE" "$target:$SHA"
-          docker push "$target:$SHA"
-          digest="$(docker buildx imagetools inspect "$target:$SHA" --format '{{ .Manifest.Digest }}')"
-          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
-          echo "image=$target@$digest" >> "$GITHUB_OUTPUT"
+        run: ./.github/scripts/mirror-image.sh
       - name: Deploy Cloud Run service
         env:
           IMAGE: ${{ steps.artifact.outputs.image }}
           PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
           REGION: ${{ vars.GCP_REGION }}
           SERVICE: ${{ vars.CLOUD_RUN_SERVICE }}
-        run: |
-          gcloud run deploy "$SERVICE" --image "$IMAGE" \
-            --project "$PROJECT_ID" --region "$REGION" --quiet
-          url="$(gcloud run services describe "$SERVICE" \
-            --project "$PROJECT_ID" --region "$REGION" \
-            --format='value(status.url)')"
-          curl --fail --show-error --silent --retry 5 --retry-delay 2 \
-            --retry-all-errors "$url/api/health"
+        run: ./.github/scripts/deploy-cloud-run.sh

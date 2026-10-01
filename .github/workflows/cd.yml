@@ -33,13 +33,7 @@ jobs:
         id: image
         env:
           SHA: ${{ github.event.workflow_run.head_sha }}
-        run: |
-          image="ghcr.io/${GITHUB_REPOSITORY,,}-web"
-          docker build --pull -f apps/web/Dockerfile \
-            --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
-            --label "org.opencontainers.image.revision=${SHA}" \
-            -t "${image}:${SHA}" .
-          echo "name=${image}" >> "$GITHUB_OUTPUT"
+        run: ./.github/scripts/build-image.sh
       - name: Scan image
         uses: aquasecurity/trivy-action@0.35.0
         with:
@@ -58,12 +52,7 @@ jobs:
         env:
           IMAGE: ${{ steps.image.outputs.name }}
           SHA: ${{ github.event.workflow_run.head_sha }}
-        run: |
-          docker push "${IMAGE}:${SHA}"
-          digest="$(docker buildx imagetools inspect "${IMAGE}:${SHA}" --format '{{ .Manifest.Digest }}')"
-          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
-          echo "digest=$digest" >> "$GITHUB_OUTPUT"
-          echo "Published ${IMAGE}@${digest} for ${SHA}" >> "$GITHUB_STEP_SUMMARY"
+        run: ./.github/scripts/push-image.sh
 
   deploy-dev:
     needs: publish
