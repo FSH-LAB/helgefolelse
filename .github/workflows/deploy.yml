@@ -26,6 +26,7 @@ on:
 
 permissions:
   actions: read
+  contents: read
 
 concurrency:
   group: deploy-web-${{ inputs.environment }}
