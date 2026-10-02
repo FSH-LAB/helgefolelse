@@ -21,12 +21,14 @@ Open [http://localhost:3000](http://localhost:3000). Run commands from the repos
 | `pnpm dev`              | Start the development server      |
 | `pnpm build`            | Build the web app for production  |
 | `pnpm lint`             | Run ESLint                        |
+| `pnpm lint:shell`       | Check deployment shell scripts    |
+| `pnpm lint:workflows`   | Check GitHub Actions workflows    |
 | `pnpm typecheck`        | Run TypeScript checks             |
 | `pnpm format:check`     | Check formatting for CI           |
 | `pnpm format`           | Format supported files            |
 | `pnpm --filter web dev` | Run only the web app's dev script |
 
-The root scripts use Turborepo to run tasks across workspaces. Currently there is one app, `web`; there are no shared packages or separate backend yet.
+The root scripts use Turborepo to run tasks across workspaces. Currently there is one app, `web`; there are no shared packages or separate backend yet. For the local delivery lint commands on macOS, install the CLI tools with `brew install shellcheck actionlint`. CI installs a pinned actionlint version separately.
 
 ## Local image security scan
 
@@ -47,22 +49,101 @@ The command exits with status `1` when a HIGH or CRITICAL finding with an availa
 
 ## Delivery
 
-CI checks PRs and pushes to `main`. After a successful push-to-main CI run, the image workflow builds the web image, blocks publication on high or critical Trivy findings, tags it with the commit SHA, and pushes it to GHCR. The same image digest is then mirrored to Google Artifact Registry and deployed to the `dev` Cloud Run service. CI and infrastructure provisioning are separate from application deployment.
+CI checks PRs and pushes to `main`. After a successful push-to-main CI run, CD scans and publishes the image to GHCR, then deploys it to `dev`. Promotion uses the same immutable image, not a rebuild. Set up each environment in its own Google Cloud project; you need a Google Cloud account authorized to enable APIs, create resources, and manage IAM, plus repository admin access on GitHub. Install and sign in to the [Google Cloud CLI](https://cloud.google.com/sdk/docs/install) (`gcloud auth login`) and [GitHub CLI](https://cli.github.com/) (`gh auth login`). Enable billing on each project before provisioning Cloud Run.
 
-Create GitHub Environments named `dev`, `staging`, and `production` under repository Settings. Allow deployments only from `main`; deploy to `dev` automatically, and require reviewers for `staging` and `production`. Add these **environment variables** to each environment (they are identifiers, not credentials):
+### 1. Provision each Google Cloud project
 
-| Variable                     | Value                                                               |
-| ---------------------------- | ------------------------------------------------------------------- |
-| `GCP_PROJECT_ID`             | The GCP project for this environment                                |
-| `GCP_REGION`                 | Cloud Run and Artifact Registry region, for example `europe-north1` |
-| `GAR_REPOSITORY`             | Existing Docker-format Artifact Registry repository name            |
-| `CLOUD_RUN_SERVICE`          | Existing Cloud Run service name                                     |
-| `GCP_WIF_PROVIDER`           | Full Workload Identity Federation provider resource name            |
-| `GCP_DEPLOY_SERVICE_ACCOUNT` | Deployment service account email in this GCP project                |
+In [Google Cloud Console](https://console.cloud.google.com/projectcreate), create one project for each environment (`dev`, `staging`, `production`) and link each project to a billing account under **Billing**. If your organization requires projects in a particular folder or organization, select it during creation. Use the three different project IDs below, and run the remaining commands once per environment; adjust the region and names as needed. The GitHub repository name must match its current owner exactly.
 
-Use a separate GCP project and deployment service account per environment. Provision the Artifact Registry repository and public Cloud Run service (port 8080, `/api/health` for health checks) outside the application workflow. Grant the deployment account only Artifact Registry Writer on its repository, Cloud Run Developer on its service, and Service Account User on the service's runtime identity. Configure GitHub OIDC Workload Identity Federation with `roles/iam.workloadIdentityUser` on the deployment account; restrict provider trust to this repository, the `main` ref, and the matching GitHub Environment. Do not store service account keys in GitHub. For private GHCR images, grant this repository's Actions read access to the package if it is not already linked.
+```sh
+export ENV=dev
+export PROJECT_ID=your-dev-project-id
+export REGION=europe-north1
+export GAR_REPOSITORY=helgefolelse
+export CLOUD_RUN_SERVICE=helgefolelse-web
+export REPO=FSH-LAB/helgefolelse
+export DEPLOY_EMAIL="helgefolelse-deployer@$PROJECT_ID.iam.gserviceaccount.com"
+export RUNTIME_EMAIL="helgefolelse-runtime@$PROJECT_ID.iam.gserviceaccount.com"
+export PROJECT_NUMBER="$(gcloud projects describe "$PROJECT_ID" --format='value(projectNumber)')"
 
-Successful CI pushes to `main` trigger **CD**, which publishes the scanned image, records its commit SHA, GHCR digest, and passing CI run in a `web-release` artifact (retained for 90 days), then deploys automatically to `dev`. To promote a release, open **Deploy web** in the Actions tab on `main`, choose `staging` or `production`, and enter the numeric ID of a successful **CD** run shown in its URL and release summary. The workflow checks the CD and CI runs, retrieves their recorded commit and digest, verifies the image label, then mirrors that exact image to the selected project's Artifact Registry and deploys by digest. Environment reviewers must approve staging and production deployments. No image is rebuilt for promotion. Keep the prior Cloud Run revision available for rollback.
+gcloud services enable iam.googleapis.com iamcredentials.googleapis.com \
+	sts.googleapis.com artifactregistry.googleapis.com run.googleapis.com \
+	--project="$PROJECT_ID"
+gcloud artifacts repositories create "$GAR_REPOSITORY" \
+	--repository-format=docker --location="$REGION" --project="$PROJECT_ID"
+gcloud iam service-accounts create helgefolelse-deployer --project="$PROJECT_ID"
+gcloud iam service-accounts create helgefolelse-runtime --project="$PROJECT_ID"
+```
+
+Bootstrap the public Cloud Run service with a temporary Google sample image. CD replaces it with the published web image. The application serves on port 8080 and the deployment script checks `/api/health` after replacing the image.
+
+```sh
+gcloud run deploy "$CLOUD_RUN_SERVICE" \
+	--image=us-docker.pkg.dev/cloudrun/container/hello \
+	--service-account="$RUNTIME_EMAIL" --port=8080 --allow-unauthenticated \
+	--region="$REGION" --project="$PROJECT_ID"
+gcloud artifacts repositories add-iam-policy-binding "$GAR_REPOSITORY" \
+	--location="$REGION" --project="$PROJECT_ID" \
+	--member="serviceAccount:$DEPLOY_EMAIL" --role=roles/artifactregistry.writer
+gcloud run services add-iam-policy-binding "$CLOUD_RUN_SERVICE" \
+	--region="$REGION" --project="$PROJECT_ID" \
+	--member="serviceAccount:$DEPLOY_EMAIL" --role=roles/run.developer
+gcloud iam service-accounts add-iam-policy-binding "$RUNTIME_EMAIL" \
+	--project="$PROJECT_ID" --member="serviceAccount:$DEPLOY_EMAIL" \
+	--role=roles/iam.serviceAccountUser
+```
+
+### 2. Trust GitHub Actions without a key
+
+Create a Workload Identity Pool and OIDC provider in **each** project. The provider only accepts tokens from this repository, the `main` branch, and the matching GitHub Environment. Bind the **current** repository principal to the deploy service account; updating the provider condition alone does not update this IAM binding after a repository rename or transfer.
+
+```sh
+gcloud iam workload-identity-pools create github-actions \
+	--location=global --project="$PROJECT_ID" --display-name='GitHub Actions'
+gcloud iam workload-identity-pools providers create-oidc github \
+	--location=global --project="$PROJECT_ID" --workload-identity-pool=github-actions \
+	--issuer-uri=https://token.actions.githubusercontent.com \
+	--attribute-mapping='google.subject=assertion.sub,attribute.repository=assertion.repository,attribute.ref=assertion.ref,attribute.environment=assertion.environment' \
+	--attribute-condition="assertion.repository == '$REPO' && assertion.ref == 'refs/heads/main' && assertion.environment == '$ENV'"
+gcloud iam service-accounts add-iam-policy-binding "$DEPLOY_EMAIL" \
+	--project="$PROJECT_ID" --role=roles/iam.workloadIdentityUser \
+	--member="principalSet://iam.googleapis.com/projects/$PROJECT_NUMBER/locations/global/workloadIdentityPools/github-actions/attribute.repository/$REPO"
+```
+
+The provider resource name for this environment is `projects/PROJECT_NUMBER/locations/global/workloadIdentityPools/github-actions/providers/github` (replace `PROJECT_NUMBER` with the value above). Do not create or store a service account key in GitHub. When changing the repository owner, update both the provider condition **and** the service account's Workload Identity User binding; remove the obsolete binding after verifying the new one works.
+
+Verify both sides of the trust relationship before deploying:
+
+```sh
+gcloud iam workload-identity-pools providers describe github \
+	--location=global --project="$PROJECT_ID" --workload-identity-pool=github-actions \
+	--format='yaml(name,attributeCondition,attributeMapping)'
+gcloud iam service-accounts get-iam-policy "$DEPLOY_EMAIL" \
+	--project="$PROJECT_ID" --format='yaml(bindings)'
+```
+
+The second command must show `roles/iam.workloadIdentityUser` granted to the **current** `$REPO` principal set. A missing provider variable in GitHub causes an auth input error; an OIDC attribute-condition error means the provider rejected the GitHub token; `iam.serviceAccounts.getAccessToken` denied means the accepted token cannot impersonate the deployment service account. IAM changes can take a few minutes to propagate; use a fresh CD authentication attempt to verify them.
+
+### 3. Configure GitHub Environments
+
+Under repository **Settings > Environments**, create `dev`, `staging`, and `production`. Restrict deployments to `main`; require reviewers for `staging` and `production`. Add these **environment variables** to each environment (not environment secrets or repository variables), using the values from that environment's project:
+
+| Variable                     | Value                                                                                            |
+| ---------------------------- | ------------------------------------------------------------------------------------------------ |
+| `GCP_PROJECT_ID`             | `$PROJECT_ID`                                                                                    |
+| `GCP_REGION`                 | `$REGION`                                                                                        |
+| `GAR_REPOSITORY`             | `$GAR_REPOSITORY`                                                                                |
+| `CLOUD_RUN_SERVICE`          | `$CLOUD_RUN_SERVICE`                                                                             |
+| `GCP_WIF_PROVIDER`           | `projects/PROJECT_NUMBER/locations/global/workloadIdentityPools/github-actions/providers/github` |
+| `GCP_DEPLOY_SERVICE_ACCOUNT` | `$DEPLOY_EMAIL`                                                                                  |
+
+Replace shell variable names in the table with their actual values when entering them in GitHub. If the GHCR image is private, grant this repository's Actions read access to its package under the package's settings.
+
+### 4. Publish and promote
+
+Push to `main`: successful **CI** starts **CD**, which builds and scans the image, publishes it to GHCR, saves the commit SHA, digest, and passing CI run in the `web-release` artifact (retained for 90 days), then automatically deploys to `dev`. Confirm the CD run succeeds and its dev service responds at `/api/health` before promoting.
+
+Open **Deploy web** in GitHub Actions on `main`, choose `staging` or `production`, and enter the numeric ID from the **successful CD run URL**. The workflow verifies that run and its CI result, downloads the release artifact, verifies the GHCR image, mirrors it to that environment's Artifact Registry, deploys by digest, and checks `/api/health`. Environment reviewers approve protected deployments. Failed CD runs cannot be promoted; keep the previous Cloud Run revision available for rollback. To retry a failed automatic dev deployment after correcting IAM, use **Re-run failed jobs** on its CD run.
 
 ## Structure
 

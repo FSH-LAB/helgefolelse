@@ -18,7 +18,7 @@ on:
         description: Environment to promote to
         required: true
         type: choice
-        options: [dev, staging, production]
+        options: [staging, production]
       release_run_id:
         description: Successful CD run ID for the release to deploy
         required: true
@@ -26,6 +26,7 @@ on:
 
 permissions:
   actions: read
+  contents: read
 
 concurrency:
   group: deploy-web-${{ inputs.environment }}
@@ -38,6 +39,10 @@ jobs:
       sha: ${{ steps.release.outputs.sha }}
       digest: ${{ steps.release.outputs.digest }}
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
       - name: Resolve release
         id: release
         env:
@@ -45,26 +50,7 @@ jobs:
           RELEASE_RUN_ID: ${{ inputs.release_run_id }}
           SHA: ${{ inputs.sha }}
           DIGEST: ${{ inputs.digest }}
-        run: |
-          if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
-            [[ "$RELEASE_RUN_ID" =~ ^[1-9][0-9]*$ ]] || { echo '::error::Release run ID must be numeric'; exit 1; }
-            gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RELEASE_RUN_ID" |
-              jq -e --arg repo "$GITHUB_REPOSITORY" '
-                select(.path == ".github/workflows/cd.yml" and
-                       .event == "workflow_run" and .conclusion == "success" and
-                       .head_branch == "main" and .head_repository.full_name == $repo)' > /dev/null
-            gh run download "$RELEASE_RUN_ID" --repo "$GITHUB_REPOSITORY" --name web-release --dir "$RUNNER_TEMP/release"
-            SHA="$(jq -er '.sha | strings | select(test("^[0-9a-f]{40}$"))' "$RUNNER_TEMP/release/web-release.json")"
-            DIGEST="$(jq -er '.digest | strings | select(test("^sha256:[0-9a-f]{64}$"))' "$RUNNER_TEMP/release/web-release.json")"
-            ci_run_id="$(jq -er '.ci_run_id | numbers | select(. > 0)' "$RUNNER_TEMP/release/web-release.json")"
-            [[ "$(jq -er '.ci_conclusion' "$RUNNER_TEMP/release/web-release.json")" == success ]] || exit 1
-            gh api "repos/$GITHUB_REPOSITORY/actions/runs/$ci_run_id" |
-              jq -e --arg repo "$GITHUB_REPOSITORY" --arg sha "$SHA" '
-                select(.path == ".github/workflows/ci.yml" and .event == "push" and
-                       .conclusion == "success" and .head_branch == "main" and .head_sha == $sha and
-                       .head_repository.full_name == $repo)' > /dev/null
-          fi
-          printf 'sha=%s\ndigest=%s\n' "$SHA" "$DIGEST" >> "$GITHUB_OUTPUT"
+        run: bash ./.github/scripts/resolve-release.sh
 
   deploy:
     needs: resolve

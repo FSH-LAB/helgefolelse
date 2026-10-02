@@ -29,5 +29,12 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm format:check
-      - run: shellcheck .github/scripts/*.sh
+      - run: pnpm lint:shell
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.25.0"
+      - run: |
+          go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      - run: pnpm lint:workflows
       - run: pnpm turbo run lint typecheck test build --affected
