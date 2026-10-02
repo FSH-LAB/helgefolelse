@@ -53,13 +53,8 @@ jobs:
 
   deploy:
     needs: resolve
-    needs: resolve
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    permissions:
-      contents: read
-      packages: read
-      id-token: write
     permissions:
       contents: read
       packages: read
@@ -76,8 +71,6 @@ jobs:
         env:
           SHA: ${{ needs.resolve.outputs.sha }}
           DIGEST: ${{ needs.resolve.outputs.digest }}
-          SHA: ${{ needs.resolve.outputs.sha }}
-          DIGEST: ${{ needs.resolve.outputs.digest }}
         run: ./.github/scripts/verify-release.sh
       - uses: docker/login-action@v3
         with:
@@ -87,8 +80,6 @@ jobs:
       - name: Verify published image
         env:
           SOURCE: ${{ steps.release.outputs.source }}
-          SHA: ${{ needs.resolve.outputs.sha }}
-          DIGEST: ${{ needs.resolve.outputs.digest }}
           SHA: ${{ needs.resolve.outputs.sha }}
           DIGEST: ${{ needs.resolve.outputs.digest }}
         run: ./.github/scripts/verify-published-image.sh
@@ -109,7 +100,6 @@ jobs:
         id: artifact
         env:
           SOURCE: ${{ steps.release.outputs.source }}
-          SHA: ${{ needs.resolve.outputs.sha }}
           SHA: ${{ needs.resolve.outputs.sha }}
           PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
           REGION: ${{ vars.GCP_REGION }}
