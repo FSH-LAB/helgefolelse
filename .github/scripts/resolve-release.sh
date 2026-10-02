@@ -9,7 +9,7 @@ if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
 
   gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RELEASE_RUN_ID" |
     jq -e --arg repo "$GITHUB_REPOSITORY" '
-      select(.path == ".github/workflows/cd.yml" and
+      select((.path | split("@")[0]) == ".github/workflows/cd.yml" and
              .event == "workflow_run" and .conclusion == "success" and
              .head_branch == "main" and .head_repository.full_name == $repo)' > /dev/null
 
@@ -23,7 +23,7 @@ if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
 
   gh api "repos/$GITHUB_REPOSITORY/actions/runs/$ci_run_id" |
     jq -e --arg repo "$GITHUB_REPOSITORY" --arg sha "$SHA" '
-      select(.path == ".github/workflows/ci.yml" and .event == "push" and
+      select((.path | split("@")[0]) == ".github/workflows/ci.yml" and .event == "push" and
              .conclusion == "success" and .head_branch == "main" and .head_sha == $sha and
              .head_repository.full_name == $repo)' > /dev/null
 fi
