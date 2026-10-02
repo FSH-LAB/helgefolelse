@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+# shellcheck disable=SC2154 # Variables are set by the runner/calling workflow.
 
 if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
   if [[ ! "$RELEASE_RUN_ID" =~ ^[1-9][0-9]*$ ]]; then
