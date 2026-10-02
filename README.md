@@ -21,6 +21,8 @@ Open [http://localhost:3000](http://localhost:3000). Run commands from the repos
 | `pnpm dev`              | Start the development server      |
 | `pnpm build`            | Build the web app for production  |
 | `pnpm lint`             | Run ESLint                        |
+| `pnpm lint:shell`       | Check deployment shell scripts    |
+| `pnpm lint:workflows`   | Check GitHub Actions workflows    |
 | `pnpm typecheck`        | Run TypeScript checks             |
 | `pnpm format:check`     | Check formatting for CI           |
 | `pnpm format`           | Format supported files            |
