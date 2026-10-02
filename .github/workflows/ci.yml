@@ -21,7 +21,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          # --affected needs the PR base commit; main pushes run everything.
+          fetch-depth: ${{ github.event_name == 'pull_request' && 0 || 1 }}
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
@@ -30,11 +31,19 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm format:check
       - run: pnpm lint:shell
-      - uses: actions/setup-go@v6
-        with:
-          go-version: "1.25.0"
-      - run: |
-          go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
-          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      - name: Install actionlint
+        env:
+          VERSION: 1.7.12
+          SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+        run: |
+          archive="actionlint_${VERSION}_linux_amd64.tar.gz"
+          curl -fsSLo "$RUNNER_TEMP/$archive" \
+            "https://github.com/rhysd/actionlint/releases/download/v${VERSION}/${archive}"
+          echo "$SHA256  $RUNNER_TEMP/$archive" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP" actionlint
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
       - run: pnpm lint:workflows
-      - run: pnpm turbo run lint typecheck test build --affected
+      - name: Lint, typecheck, test and build
+        env:
+          AFFECTED: ${{ github.event_name == 'pull_request' && '--affected' || '' }}
+        run: pnpm turbo run lint typecheck test build ${AFFECTED:+"$AFFECTED"}
