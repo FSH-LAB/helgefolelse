@@ -75,7 +75,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         with:
-          name: web-release
+          name: web-release-${{ steps.sha.outputs.sha }}
           path: ${{ runner.temp }}/web-release.json
           if-no-files-found: error
           retention-days: 90
@@ -90,5 +90,31 @@ jobs:
     uses: ./.github/workflows/deploy.yml
     with:
       environment: dev
+      sha: ${{ needs.publish.outputs.sha }}
+      digest: ${{ needs.publish.outputs.digest }}
+
+  deploy-staging:
+    needs: [publish, deploy-dev]
+    permissions:
+      actions: read
+      contents: read
+      packages: read
+      id-token: write
+    uses: ./.github/workflows/deploy.yml
+    with:
+      environment: staging
+      sha: ${{ needs.publish.outputs.sha }}
+      digest: ${{ needs.publish.outputs.digest }}
+
+  deploy-production:
+    needs: [publish, deploy-staging]
+    permissions:
+      actions: read
+      contents: read
+      packages: read
+      id-token: write
+    uses: ./.github/workflows/deploy.yml
+    with:
+      environment: production
       sha: ${{ needs.publish.outputs.sha }}
       digest: ${{ needs.publish.outputs.digest }}
