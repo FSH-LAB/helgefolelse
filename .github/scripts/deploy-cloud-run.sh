@@ -6,9 +6,11 @@ set -euo pipefail
 gcloud run deploy "$SERVICE" --image "$IMAGE" \
   --project "$PROJECT_ID" --region "$REGION" \
   --no-traffic --tag candidate --update-env-vars "GIT_SHA=$SHA" --quiet
-candidate_url="$(gcloud run services describe "$SERVICE" \
+candidate="$(gcloud run services describe "$SERVICE" \
   --project "$PROJECT_ID" --region "$REGION" --format=json |
-  jq -er '.status.traffic[] | select(.tag == "candidate") | .url')"
+  jq -c '.status.traffic[] | select(.tag == "candidate")')"
+candidate_url="$(jq -er .url <<< "$candidate")"
+candidate_revision="$(jq -er .revisionName <<< "$candidate")"
 health_response="$(curl --fail --show-error --silent --retry 5 --retry-delay 2 \
   --retry-all-errors "$candidate_url/api/health")"
 if ! jq -e --arg sha "$SHA" '.status == "ok" and .commit == $sha' \
@@ -18,7 +20,8 @@ if ! jq -e --arg sha "$SHA" '.status == "ok" and .commit == $sha' \
   exit 1
 fi
 
-gcloud run services update-traffic "$SERVICE" --to-latest \
+gcloud run services update-traffic "$SERVICE" \
+  --to-revisions "$candidate_revision=100" \
   --project "$PROJECT_ID" --region "$REGION" --quiet
 service_url="$(gcloud run services describe "$SERVICE" \
   --project "$PROJECT_ID" --region "$REGION" \

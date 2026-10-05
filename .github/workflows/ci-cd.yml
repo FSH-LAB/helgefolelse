@@ -21,46 +21,42 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # --affected needs the PR base commit; main pushes run everything.
-          fetch-depth: ${{ github.event_name == 'pull_request' && '0' || '1' }}
           persist-credentials: false
-      - name: Detect container image inputs
-        id: image_inputs
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
         if: github.event_name == 'pull_request'
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: |
-          if git diff --quiet "$BASE_SHA...HEAD" -- \
-            .dockerignore apps/web/Dockerfile pnpm-lock.yaml package.json \
-            pnpm-workspace.yaml turbo.json apps/web/package.json; then
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-          fi
-      - uses: docker/setup-buildx-action@v4.4.1
-        if: steps.image_inputs.outputs.changed == 'true'
-      - name: Build image for pull request scan
-        if: steps.image_inputs.outputs.changed == 'true'
-        uses: docker/build-push-action@v7.4.0
+      - name: Build pull request image
+        if: github.event_name == 'pull_request'
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           file: apps/web/Dockerfile
           load: true
-          tags: helgefolelse-pr:${{ github.event.pull_request.number }}
+          tags: helgefolelse-web:pr
           cache-from: type=gha,scope=web
+      - name: Smoke test pull request image
+        if: github.event_name == 'pull_request'
+        run: |
+          docker run --detach --name web --publish 8080:8080 \
+            --env GIT_SHA="$GITHUB_SHA" helgefolelse-web:pr
+          if ! curl --fail --show-error --silent --retry 10 --retry-delay 1 \
+            --retry-all-errors http://localhost:8080/api/health |
+            jq -e --arg sha "$GITHUB_SHA" '.status == "ok" and .commit == $sha'; then
+            docker logs web
+            exit 1
+          fi
       - name: Scan pull request image
-        if: steps.image_inputs.outputs.changed == 'true'
-        uses: aquasecurity/trivy-action@v0.36.0
+        if: github.event_name == 'pull_request'
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
-          image-ref: helgefolelse-pr:${{ github.event.pull_request.number }}
+          image-ref: helgefolelse-web:pr
           format: table
           exit-code: "1"
           severity: HIGH,CRITICAL
           ignore-unfixed: true
-      - uses: pnpm/action-setup@v6.1.0
-      - uses: actions/setup-node@v7.0.0
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version-file: .nvmrc
           package-manager-cache: false
@@ -80,7 +76,7 @@ jobs:
           echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
       - run: pnpm lint:workflows
       - name: Audit workflows with zizmor
-        uses: zizmorcore/zizmor-action@v0.6.4
+        uses: zizmorcore/zizmor-action@cc914d7f3750a2d13d75c7f184a1060aa0e9d482 # v0.6.4
         with:
           version: v1.30.1
           persona: auditor
@@ -88,16 +84,13 @@ jobs:
           annotations: true
           config: .github/zizmor.yml
       - name: Lint, typecheck, test and build
-        env:
-          AFFECTED: ${{ github.event_name == 'pull_request' && '--affected' || '' }}
-        run: pnpm turbo run lint typecheck test build ${AFFECTED:+"$AFFECTED"}
+        run: pnpm turbo run lint typecheck test build
 
   publish:
     name: Publish web image
     needs: verify
     if: github.event_name == 'push'
     outputs:
-      sha: ${{ steps.sha.outputs.sha }}
       digest: ${{ steps.build.outputs.digest }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -106,43 +99,36 @@ jobs:
       packages: write # Push the built image to GHCR.
       attestations: write # Publish the image's provenance attestation.
       id-token: write # Sign the attestation with GitHub's OIDC identity.
-    concurrency:
-      group: web-image-${{ github.sha }}
-      cancel-in-progress: false
     steps:
-      - name: Resolve commit SHA
-        id: sha
-        run: echo "sha=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
-      - uses: actions/checkout@v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ steps.sha.outputs.sha }}
           persist-credentials: false
       - name: Resolve image name
         id: image
         run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}-web" >> "$GITHUB_OUTPUT"
-      - uses: docker/setup-buildx-action@v4.4.1
-      - uses: docker/login-action@v4.6.0
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Build and publish image
         id: build
-        uses: docker/build-push-action@v7.4.0
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           file: apps/web/Dockerfile
           push: true
-          tags: ${{ steps.image.outputs.name }}:${{ steps.sha.outputs.sha }}
+          tags: ${{ steps.image.outputs.name }}:${{ github.sha }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            org.opencontainers.image.revision=${{ steps.sha.outputs.sha }}
+            org.opencontainers.image.revision=${{ github.sha }}
           cache-from: type=gha,scope=web
           cache-to: type=gha,mode=max,scope=web
           sbom: true
           provenance: mode=max
       - name: Scan published image
-        uses: aquasecurity/trivy-action@v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: ${{ steps.image.outputs.name }}@${{ steps.build.outputs.digest }}
           format: table
@@ -150,7 +136,7 @@ jobs:
           severity: HIGH,CRITICAL
           ignore-unfixed: true
       - name: Attest build provenance
-        uses: actions/attest-build-provenance@v4.2.2
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ${{ steps.image.outputs.name }}
           subject-digest: ${{ steps.build.outputs.digest }}
@@ -165,7 +151,7 @@ jobs:
     uses: ./.github/workflows/deploy.yml # zizmor: ignore[self-repository] -- actionlint 1.7.12 does not support $/ workflow calls.
     with:
       environment: dev
-      sha: ${{ needs.publish.outputs.sha }}
+      sha: ${{ github.sha }}
       digest: ${{ needs.publish.outputs.digest }}
 
   deploy-staging:
@@ -178,7 +164,7 @@ jobs:
     uses: ./.github/workflows/deploy.yml # zizmor: ignore[self-repository] -- actionlint 1.7.12 does not support $/ workflow calls.
     with:
       environment: staging
-      sha: ${{ needs.publish.outputs.sha }}
+      sha: ${{ github.sha }}
       digest: ${{ needs.publish.outputs.digest }}
 
   deploy-production:
@@ -191,5 +177,5 @@ jobs:
     uses: ./.github/workflows/deploy.yml # zizmor: ignore[self-repository] -- actionlint 1.7.12 does not support $/ workflow calls.
     with:
       environment: production
-      sha: ${{ needs.publish.outputs.sha }}
+      sha: ${{ github.sha }}
       digest: ${{ needs.publish.outputs.digest }}
