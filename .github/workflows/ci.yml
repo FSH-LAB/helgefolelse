@@ -19,12 +19,45 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # --affected needs the PR base commit; main pushes run everything.
           fetch-depth: ${{ github.event_name == 'pull_request' && 0 || 1 }}
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - name: Detect container image inputs
+        id: image_inputs
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if git diff --quiet "$BASE_SHA...HEAD" -- \
+            .dockerignore apps/web/Dockerfile pnpm-lock.yaml package.json \
+            pnpm-workspace.yaml turbo.json apps/web/package.json; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        if: steps.image_inputs.outputs.changed == 'true'
+      - name: Build image for pull request scan
+        if: steps.image_inputs.outputs.changed == 'true'
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: apps/web/Dockerfile
+          load: true
+          tags: helgefolelse-pr:${{ github.event.pull_request.number }}
+          cache-from: type=gha,scope=web
+      - name: Scan pull request image
+        if: steps.image_inputs.outputs.changed == 'true'
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: helgefolelse-pr:${{ github.event.pull_request.number }}
+          format: table
+          exit-code: "1"
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version-file: .nvmrc
           cache: pnpm
