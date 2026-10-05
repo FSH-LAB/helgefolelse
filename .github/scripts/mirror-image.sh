@@ -4,7 +4,11 @@ set -euo pipefail
 : "${REPOSITORY:?}" "${GITHUB_OUTPUT:?}"
 
 target="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPOSITORY}/web"
-docker buildx imagetools create --prefer-index=false --tag "$target:$SHA" "$SOURCE"
+skopeo copy --all --preserve-digests --authfile "$HOME/.docker/config.json" \
+	"docker://$SOURCE" "docker://$target:$SHA"
 digest="$(docker buildx imagetools inspect "$target:$SHA" --format '{{ .Manifest.Digest }}')"
-[[ "$digest" == "${SOURCE#*@}" ]]
+if [[ "$digest" != "${SOURCE#*@}" ]]; then
+	echo "::error::Mirror digest mismatch: expected ${SOURCE#*@}, got $digest" >&2
+	exit 1
+fi
 echo "image=$target@$digest" >> "$GITHUB_OUTPUT"

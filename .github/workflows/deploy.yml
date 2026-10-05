@@ -100,6 +100,10 @@ jobs:
           registry: ${{ vars.GCP_REGION }}-docker.pkg.dev
           username: oauth2accesstoken
           password: ${{ steps.auth.outputs.access_token }}
+      - name: Install Skopeo
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends skopeo
       - name: Mirror image to Artifact Registry
         id: artifact
         env:
