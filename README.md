@@ -75,7 +75,7 @@ gcloud iam service-accounts create helgefolelse-deployer --project="$PROJECT_ID"
 gcloud iam service-accounts create helgefolelse-runtime --project="$PROJECT_ID"
 ```
 
-Bootstrap the public Cloud Run service with a temporary Google sample image. CD replaces it with the published web image. The application serves on port 8080 and the deployment script checks `/api/health` after replacing the image.
+Bootstrap the public Cloud Run service with a temporary Google sample image. CD deploys the published web image as a zero-traffic `candidate` revision, checks `/api/health` against its commit SHA, and only then shifts service traffic to it. The application serves on port 8080.
 
 ```sh
 gcloud run deploy "$CLOUD_RUN_SERVICE" \
@@ -143,7 +143,7 @@ Replace shell variable names in the table with their actual values when entering
 
 Push to `main`: successful **CI** starts **CD**, which builds and scans the image, publishes it to GHCR with a signed [build provenance attestation](https://docs.github.com/actions/security-for-github-actions/using-artifact-attestations), then promotes it through `dev`, `staging`, and `production`. Staging and production wait for environment reviewers to approve.
 
-Every deployment first verifies the image's attestation (signed by `cd.yml` on `main`) and that the image was built from the requested commit, then mirrors it to that environment's Artifact Registry, deploys by digest, and checks `/api/health`. You can check a release yourself with `gh attestation verify oci://ghcr.io/<owner>/<repo>-web@<digest> --repo <owner>/<repo>`.
+Every deployment first verifies the image's attestation (signed by `cd.yml` on `main`) and that the image was built from the requested commit, then mirrors it to that environment's Artifact Registry. Cloud Run deploys the revision with zero traffic and a `candidate` tag; the workflow checks that its `/api/health` response reports the expected commit SHA before shifting 100% of traffic to it. You can check a release yourself with `gh attestation verify oci://ghcr.io/<owner>/<repo>-web@<digest> --repo <owner>/<repo>`.
 
 To redeploy or roll back, open **Deploy web** in GitHub Actions on `main`, choose the environment, and enter either a commit SHA or a version tag (for example `v1.2.3`). The tag must point to a commit on `main` that CI and CD have already published; the workflow resolves it to that commit's image, verifies its provenance, and deploys by digest. A version without the `v` prefix also resolves to a matching `v`-prefixed tag. To retry a failed automatic deployment after correcting IAM, use **Re-run failed jobs** on its CD run.
 
