@@ -1,0 +1,148 @@
+name: Preview
+
+# Runs trusted default-branch code; PR code only reaches this workflow as CI's image artifact.
+on:
+  workflow_run: # zizmor: ignore[dangerous-triggers] -- only consumes the image artifact; no PR code is checked out or executed on the runner.
+    workflows: [CI/CD]
+    types: [completed]
+  schedule:
+    - cron: "23 4 * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: preview-${{ github.event.workflow_run.pull_requests[0].number || github.event_name }}
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    name: Deploy preview
+    if: >-
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      github.event.workflow_run.actor.login != 'dependabot[bot]' &&
+      github.event.workflow_run.pull_requests[0].number
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      actions: read # Download the image artifact from the CI run.
+      contents: read
+      packages: write # Push the preview image to GHCR.
+      id-token: write # Authenticate to GCP with Workload Identity Federation.
+    environment:
+      name: preview
+      url: ${{ steps.deploy.outputs.url }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+      - name: Resolve preview
+        id: preview
+        env:
+          PR_NUMBER: ${{ github.event.workflow_run.pull_requests[0].number }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          [[ "$PR_NUMBER" =~ ^[0-9]+$ && "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]
+          {
+            echo "name=ghcr.io/${GITHUB_REPOSITORY,,}-web"
+            echo "tag=pr-$PR_NUMBER"
+            echo "sha=$HEAD_SHA"
+          } >> "$GITHUB_OUTPUT"
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: preview-image
+          path: ${{ runner.temp }}/preview
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish preview image
+        id: build
+        env:
+          NAME: ${{ steps.preview.outputs.name }}
+          TAG: ${{ steps.preview.outputs.tag }}
+        run: |
+          loaded="$(docker load --quiet --input "$RUNNER_TEMP/preview/preview-image.tar.gz")"
+          if [[ "$loaded" != "Loaded image: helgefolelse-web:ci" ]]; then
+            echo "::error::Unexpected artifact contents: $loaded" >&2
+            exit 1
+          fi
+          docker tag helgefolelse-web:ci "$NAME:$TAG"
+          docker push --quiet "$NAME:$TAG"
+          echo "source=$(docker inspect --format '{{index .RepoDigests 0}}' "$NAME:$TAG")" >> "$GITHUB_OUTPUT"
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        id: auth
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+          token_format: access_token
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ${{ vars.GCP_REGION }}-docker.pkg.dev
+          username: oauth2accesstoken
+          password: ${{ steps.auth.outputs.access_token }}
+      - name: Mirror image to Artifact Registry
+        id: artifact
+        env:
+          SOURCE: ${{ steps.build.outputs.source }}
+          SHA: ${{ steps.preview.outputs.sha }}
+          PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+          REGION: ${{ vars.GCP_REGION }}
+          REPOSITORY: ${{ vars.GAR_REPOSITORY }}
+        run: ./.github/scripts/mirror-image.sh
+      - name: Deploy preview revision
+        id: deploy
+        env:
+          IMAGE: ${{ steps.artifact.outputs.image }}
+          PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+          REGION: ${{ vars.GCP_REGION }}
+          SERVICE: ${{ vars.CLOUD_RUN_SERVICE }}
+          SHA: ${{ steps.preview.outputs.sha }}
+          PREVIEW_TAG: ${{ steps.preview.outputs.tag }}
+        run: ./.github/scripts/deploy-cloud-run.sh
+
+  cleanup:
+    name: Remove closed previews
+    if: github.event_name != 'workflow_run'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      id-token: write # Authenticate to GCP with Workload Identity Federation.
+      pull-requests: read # Check whether each preview's PR is still open.
+    environment: preview
+    steps:
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+      - name: Remove tags of closed pull requests
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+          REGION: ${{ vars.GCP_REGION }}
+          SERVICE: ${{ vars.CLOUD_RUN_SERVICE }}
+        run: |
+          gcloud_opts=(--project "$PROJECT_ID" --region "$REGION" --quiet)
+          tags="$(gcloud run services describe "$SERVICE" "${gcloud_opts[@]}" --format=json |
+            jq -r '.status.traffic[].tag // empty | select(test("^pr-[0-9]+$"))')"
+          stale=()
+          for tag in $tags; do
+            state="$(gh pr view "${tag#pr-}" --repo "$GITHUB_REPOSITORY" --json state --jq .state)"
+            [[ "$state" == OPEN ]] || stale+=("$tag")
+          done
+          if (( ${#stale[@]} )); then
+            gcloud run services update-traffic "$SERVICE" "${gcloud_opts[@]}" \
+              --remove-tags "$(IFS=,; echo "${stale[*]}")"
+            echo "Removed previews: ${stale[*]}" >> "$GITHUB_STEP_SUMMARY"
+          fi

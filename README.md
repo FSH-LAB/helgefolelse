@@ -49,7 +49,7 @@ The command exits with status `1` when a HIGH or CRITICAL finding with an availa
 
 ## Delivery
 
-CI checks PRs and pushes to `main`. After a successful push-to-main CI run, CD scans and publishes the image to GHCR, then deploys it to `dev`. Promotion uses the same immutable image, not a rebuild. Set up each environment in its own Google Cloud project; you need a Google Cloud account authorized to enable APIs, create resources, and manage IAM, plus repository admin access on GitHub. Install and sign in to the [Google Cloud CLI](https://cloud.google.com/sdk/docs/install) (`gcloud auth login`) and [GitHub CLI](https://cli.github.com/) (`gh auth login`). Enable billing on each project before provisioning Cloud Run.
+The `CI/CD` workflow checks pull requests, merge-queue groups, and pushes to `main`. After a successful push-to-main verification, it builds and pushes one image to GHCR, scans that exact image digest with Trivy, and attests it before deploying to `dev`. Staging and production then promote the same verified digest; they do not rebuild it. Set up each environment in its own Google Cloud project; you need a Google Cloud account authorized to enable APIs, create resources, and manage IAM, plus repository admin access on GitHub. Install and sign in to the [Google Cloud CLI](https://cloud.google.com/sdk/docs/install) (`gcloud auth login`) and [GitHub CLI](https://cli.github.com/) (`gh auth login`). Enable billing on each project before provisioning Cloud Run.
 
 ### 1. Provision each Google Cloud project
 
@@ -68,14 +68,14 @@ export PROJECT_NUMBER="$(gcloud projects describe "$PROJECT_ID" --format='value(
 
 gcloud services enable iam.googleapis.com iamcredentials.googleapis.com \
 	sts.googleapis.com artifactregistry.googleapis.com run.googleapis.com \
-	--project="$PROJECT_ID"
+	monitoring.googleapis.com --project="$PROJECT_ID"
 gcloud artifacts repositories create "$GAR_REPOSITORY" \
 	--repository-format=docker --location="$REGION" --project="$PROJECT_ID"
 gcloud iam service-accounts create helgefolelse-deployer --project="$PROJECT_ID"
 gcloud iam service-accounts create helgefolelse-runtime --project="$PROJECT_ID"
 ```
 
-Bootstrap the public Cloud Run service with a temporary Google sample image. CD replaces it with the published web image. The application serves on port 8080 and the deployment script checks `/api/health` after replacing the image.
+Bootstrap the public Cloud Run service with a temporary Google sample image. CD deploys the published web image as a zero-traffic `candidate` revision, checks `/api/health` against its commit SHA, and only then shifts service traffic to it. The application serves on port 8080.
 
 ```sh
 gcloud run deploy "$CLOUD_RUN_SERVICE" \
@@ -91,11 +91,14 @@ gcloud run services add-iam-policy-binding "$CLOUD_RUN_SERVICE" \
 gcloud iam service-accounts add-iam-policy-binding "$RUNTIME_EMAIL" \
 	--project="$PROJECT_ID" --member="serviceAccount:$DEPLOY_EMAIL" \
 	--role=roles/iam.serviceAccountUser
+# Lets the canary read the candidate revision's 5xx count.
+gcloud projects add-iam-policy-binding "$PROJECT_ID" \
+	--member="serviceAccount:$DEPLOY_EMAIL" --role=roles/monitoring.viewer --condition=None
 ```
 
 ### 2. Trust GitHub Actions without a key
 
-Create a Workload Identity Pool and OIDC provider in **each** project. The provider only accepts tokens from this repository, the `main` branch, and the matching GitHub Environment. Bind the **current** repository principal to the deploy service account; updating the provider condition alone does not update this IAM binding after a repository rename or transfer.
+Create a Workload Identity Pool and OIDC provider in **each** project. The provider only accepts tokens from this repository, the `main` branch, and the matching GitHub Environment. Bind the deploy service account to that **environment** principal, so a token for one environment (for example `preview`) can never impersonate another environment's deployer.
 
 ```sh
 gcloud iam workload-identity-pools create github-actions \
@@ -107,10 +110,10 @@ gcloud iam workload-identity-pools providers create-oidc github \
 	--attribute-condition="assertion.repository == '$REPO' && assertion.ref == 'refs/heads/main' && assertion.environment == '$ENV'"
 gcloud iam service-accounts add-iam-policy-binding "$DEPLOY_EMAIL" \
 	--project="$PROJECT_ID" --role=roles/iam.workloadIdentityUser \
-	--member="principalSet://iam.googleapis.com/projects/$PROJECT_NUMBER/locations/global/workloadIdentityPools/github-actions/attribute.repository/$REPO"
+	--member="principalSet://iam.googleapis.com/projects/$PROJECT_NUMBER/locations/global/workloadIdentityPools/github-actions/attribute.environment/$ENV"
 ```
 
-The provider resource name for this environment is `projects/PROJECT_NUMBER/locations/global/workloadIdentityPools/github-actions/providers/github` (replace `PROJECT_NUMBER` with the value above). Do not create or store a service account key in GitHub. When changing the repository owner, update both the provider condition **and** the service account's Workload Identity User binding; remove the obsolete binding after verifying the new one works.
+The provider resource name for this environment is `projects/PROJECT_NUMBER/locations/global/workloadIdentityPools/github-actions/providers/github` (replace `PROJECT_NUMBER` with the value above). Do not create or store a service account key in GitHub. When changing the repository owner, update the provider condition; the environment binding does not change.
 
 Verify both sides of the trust relationship before deploying:
 
@@ -122,7 +125,7 @@ gcloud iam service-accounts get-iam-policy "$DEPLOY_EMAIL" \
 	--project="$PROJECT_ID" --format='yaml(bindings)'
 ```
 
-The second command must show `roles/iam.workloadIdentityUser` granted to the **current** `$REPO` principal set. A missing provider variable in GitHub causes an auth input error; an OIDC attribute-condition error means the provider rejected the GitHub token; `iam.serviceAccounts.getAccessToken` denied means the accepted token cannot impersonate the deployment service account. IAM changes can take a few minutes to propagate; use a fresh CD authentication attempt to verify them.
+The second command must show `roles/iam.workloadIdentityUser` granted to the `attribute.environment/$ENV` principal set. A missing provider variable in GitHub causes an auth input error; an OIDC attribute-condition error means the provider rejected the GitHub token; `iam.serviceAccounts.getAccessToken` denied means the accepted token cannot impersonate the deployment service account. IAM changes can take a few minutes to propagate; use a fresh CD authentication attempt to verify them.
 
 ### 3. Configure GitHub Environments
 
@@ -139,11 +142,59 @@ Under repository **Settings > Environments**, create `dev`, `staging`, and `prod
 
 Replace shell variable names in the table with their actual values when entering them in GitHub. If the GHCR image is private, grant this repository's Actions read access to its package under the package's settings.
 
-### 4. Publish and promote
+To roll production out gradually, also set these optional variables on that environment. The candidate gets `CANARY_PERCENT` of traffic for `CANARY_SECONDS`; any 5xx response from it in Cloud Monitoring, or any failure or cancellation during the window, moves traffic back to the previous revision. Cloud Run metrics arrive up to about three minutes late, so the script waits an extra 180 seconds after the window before checking them.
 
-Push to `main`: successful **CI** starts **CD**, which builds and scans the image, publishes it to GHCR, saves the commit SHA, digest, and passing CI run in the `web-release` artifact (retained for 90 days), then automatically deploys to `dev`. Confirm the CD run succeeds and its dev service responds at `/api/health` before promoting.
+| Variable         | Example | Purpose                                      |
+| ---------------- | ------- | -------------------------------------------- |
+| `CANARY_PERCENT` | `10`    | Share of traffic for the candidate (1-99)    |
+| `CANARY_SECONDS` | `600`   | Observation window before 100% (default 300) |
 
-Open **Deploy web** in GitHub Actions on `main`, choose `staging` or `production`, and enter the numeric ID from the **successful CD run URL**. The workflow verifies that run and its CI result, downloads the release artifact, verifies the GHCR image, mirrors it to that environment's Artifact Registry, deploys by digest, and checks `/api/health`. Environment reviewers approve protected deployments. Failed CD runs cannot be promoted; keep the previous Cloud Run revision available for rollback. To retry a failed automatic dev deployment after correcting IAM, use **Re-run failed jobs** on its CD run.
+### 4. Optional: pull request previews
+
+The PR's `CI/CD` run builds the image without any write or cloud permissions and uploads it as an artifact. Once that run passes, the **Preview** workflow, which always runs the trusted copy on `main`, publishes the image to GHCR as `pr-<number>`, deploys it as a zero-traffic `pr-<number>` revision, and shows its URL on the PR. A daily sweep removes the tags of closed PRs. Forks and Dependabot PRs are skipped. Previews run untrusted branch code, so give them their own Cloud Run service, runtime identity, and deployer in the `dev` project. With the step 1 variables still set for `dev`:
+
+```sh
+export PREVIEW_SERVICE=helgefolelse-preview
+export PREVIEW_EMAIL="helgefolelse-previewer@$PROJECT_ID.iam.gserviceaccount.com"
+export PREVIEW_RUNTIME_EMAIL="helgefolelse-preview-runtime@$PROJECT_ID.iam.gserviceaccount.com"
+
+gcloud iam service-accounts create helgefolelse-previewer --project="$PROJECT_ID"
+gcloud iam service-accounts create helgefolelse-preview-runtime --project="$PROJECT_ID"
+gcloud run deploy "$PREVIEW_SERVICE" \
+	--image=us-docker.pkg.dev/cloudrun/container/hello \
+	--service-account="$PREVIEW_RUNTIME_EMAIL" --port=8080 --allow-unauthenticated \
+	--max-instances=1 --region="$REGION" --project="$PROJECT_ID"
+gcloud run services add-iam-policy-binding "$PREVIEW_SERVICE" \
+	--region="$REGION" --project="$PROJECT_ID" \
+	--member="serviceAccount:$PREVIEW_EMAIL" --role=roles/run.developer
+gcloud artifacts repositories add-iam-policy-binding "$GAR_REPOSITORY" \
+	--location="$REGION" --project="$PROJECT_ID" \
+	--member="serviceAccount:$PREVIEW_EMAIL" --role=roles/artifactregistry.writer
+gcloud iam service-accounts add-iam-policy-binding "$PREVIEW_RUNTIME_EMAIL" \
+	--project="$PROJECT_ID" --member="serviceAccount:$PREVIEW_EMAIL" \
+	--role=roles/iam.serviceAccountUser
+gcloud iam service-accounts add-iam-policy-binding "$PREVIEW_EMAIL" \
+	--project="$PROJECT_ID" --role=roles/iam.workloadIdentityUser \
+	--member="principalSet://iam.googleapis.com/projects/$PROJECT_NUMBER/locations/global/workloadIdentityPools/github-actions/attribute.environment/preview"
+```
+
+Preview deployments only run from `main`, so the provider can require `main` for both environments; the environment binding keeps their deployers apart:
+
+```sh
+gcloud iam workload-identity-pools providers update-oidc github \
+	--location=global --project="$PROJECT_ID" --workload-identity-pool=github-actions \
+	--attribute-condition="assertion.repository == '$REPO' && assertion.ref == 'refs/heads/main' && (assertion.environment == 'dev' || assertion.environment == 'preview')"
+```
+
+Finally, create a `preview` GitHub Environment restricted to `main` without reviewers, and give it the step 3 variables with `CLOUD_RUN_SERVICE` set to `$PREVIEW_SERVICE` and `GCP_DEPLOY_SERVICE_ACCOUNT` set to `$PREVIEW_EMAIL`. Until it exists, the Preview workflow fails without affecting CI or deployments.
+
+### 5. Publish and promote
+
+On a push to `main`, the **CI/CD** workflow verifies the commit, builds and pushes one image to GHCR, scans the immutable image digest with Trivy, and creates a signed [build provenance attestation](https://docs.github.com/actions/security-for-github-actions/using-artifact-attestations) only after the scan passes. It then promotes that same digest through `dev`, `staging`, and `production`. Staging and production wait for environment reviewers to approve. Pull requests and merge-queue groups run checks without publishing or deploying.
+
+Every deployment first verifies the image's attestation (signed by `ci-cd.yml` on `main`) and that the image was built from the requested commit, then mirrors it to that environment's Artifact Registry. Cloud Run deploys the revision with zero traffic and a `candidate` tag; the workflow checks that its `/api/health` response reports the expected commit SHA and that the home page renders, optionally runs the canary described above, and then shifts 100% of traffic to it. The GHCR image is then tagged with the environment name, so the package page shows what runs where. After production, the workflow creates a GitHub Release (`vYYYY.M.<run>`) with generated notes. The deployed service URL appears on its GitHub Environment. You can check a release yourself with `gh attestation verify oci://ghcr.io/<owner>/<repo>-web@<digest> --repo <owner>/<repo>`.
+
+To redeploy or roll back, open **Deploy web** in GitHub Actions on `main`, choose the environment, and enter either a commit SHA or a version tag (for example `v1.2.3`). The tag must point to a commit on `main` that CI has already published; the workflow resolves it to that commit's image, verifies its provenance, and deploys by digest. A version without the `v` prefix also resolves to a matching `v`-prefixed tag. To retry a failed automatic deployment after correcting IAM, use **Re-run failed jobs** on its CI run.
 
 ## Structure
 
