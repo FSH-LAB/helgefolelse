@@ -49,7 +49,7 @@ The command exits with status `1` when a HIGH or CRITICAL finding with an availa
 
 ## Delivery
 
-CI checks PRs and pushes to `main`. After a successful push-to-main CI run, CD scans and publishes the image to GHCR, then deploys it to `dev`. Promotion uses the same immutable image, not a rebuild. Set up each environment in its own Google Cloud project; you need a Google Cloud account authorized to enable APIs, create resources, and manage IAM, plus repository admin access on GitHub. Install and sign in to the [Google Cloud CLI](https://cloud.google.com/sdk/docs/install) (`gcloud auth login`) and [GitHub CLI](https://cli.github.com/) (`gh auth login`). Enable billing on each project before provisioning Cloud Run.
+The `CI/CD` workflow checks pull requests, merge-queue groups, and pushes to `main`. After a successful push-to-main verification, it builds and pushes one image to GHCR, scans that exact image digest with Trivy, and attests it before deploying to `dev`. Staging and production then promote the same verified digest; they do not rebuild it. Set up each environment in its own Google Cloud project; you need a Google Cloud account authorized to enable APIs, create resources, and manage IAM, plus repository admin access on GitHub. Install and sign in to the [Google Cloud CLI](https://cloud.google.com/sdk/docs/install) (`gcloud auth login`) and [GitHub CLI](https://cli.github.com/) (`gh auth login`). Enable billing on each project before provisioning Cloud Run.
 
 ### 1. Provision each Google Cloud project
 
@@ -141,7 +141,7 @@ Replace shell variable names in the table with their actual values when entering
 
 ### 4. Publish and promote
 
-On a push to `main`, the **CI** workflow verifies the commit, then builds and scans the image, publishes it to GHCR with a signed [build provenance attestation](https://docs.github.com/actions/security-for-github-actions/using-artifact-attestations), and promotes it through `dev`, `staging`, and `production`. Staging and production wait for environment reviewers to approve. Pull requests and merge-queue groups run CI without publishing or deploying.
+On a push to `main`, the **CI/CD** workflow verifies the commit, builds and pushes one image to GHCR, scans the immutable image digest with Trivy, and creates a signed [build provenance attestation](https://docs.github.com/actions/security-for-github-actions/using-artifact-attestations) only after the scan passes. It then promotes that same digest through `dev`, `staging`, and `production`. Staging and production wait for environment reviewers to approve. Pull requests and merge-queue groups run checks without publishing or deploying.
 
 Every deployment first verifies the image's attestation (signed by `ci-cd.yml` on `main`) and that the image was built from the requested commit, then mirrors it to that environment's Artifact Registry. Cloud Run deploys the revision with zero traffic and a `candidate` tag; the workflow checks that its `/api/health` response reports the expected commit SHA before shifting 100% of traffic to it. The deployed service URL appears on its GitHub Environment. You can check a release yourself with `gh attestation verify oci://ghcr.io/<owner>/<repo>-web@<digest> --repo <owner>/<repo>`.
 
