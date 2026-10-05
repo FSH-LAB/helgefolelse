@@ -48,7 +48,7 @@ fi
 
 # Only CI on main signs images, and publish only runs after the verify job succeeds.
 gh attestation verify "oci://$image@$DIGEST" --repo "$GITHUB_REPOSITORY" \
-  --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/ci.yml" \
+  --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/ci-cd.yml" \
   --source-ref refs/heads/main --deny-self-hosted-runners
 
 # Provenance records CD's trigger SHA, not the built commit, so check the signed image's label.
