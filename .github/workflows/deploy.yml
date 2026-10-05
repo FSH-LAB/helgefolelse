@@ -115,6 +115,8 @@ jobs:
           REGION: ${{ vars.GCP_REGION }}
           SERVICE: ${{ vars.CLOUD_RUN_SERVICE }}
           SHA: ${{ needs.verify.outputs.sha }}
+          CANARY_PERCENT: ${{ vars.CANARY_PERCENT }}
+          CANARY_SECONDS: ${{ vars.CANARY_SECONDS }}
         run: ./.github/scripts/deploy-cloud-run.sh
       - name: Tag deployed image in GHCR
         env:
