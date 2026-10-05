@@ -1,4 +1,4 @@
-FROM node:24.20.0-slim AS base
+FROM node:26.10.0-slim AS base
 
 WORKDIR /app
 RUN corepack enable pnpm
