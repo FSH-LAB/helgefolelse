@@ -1,7 +1,7 @@
 FROM node:26.10.0-slim AS base
 
 WORKDIR /app
-RUN corepack enable pnpm
+RUN npm install --global corepack@0.36.0 && corepack enable pnpm
 
 FROM base AS pruner
 COPY . .
@@ -22,7 +22,7 @@ WORKDIR /app
 ENV NODE_ENV=production PORT=8080 HOSTNAME=0.0.0.0
 RUN apt-get update \
     && apt-get upgrade -y \
-    && apt-get install -y --no-install-recommends ca-certificates \
+    && apt-get install -y --no-install-recommends ca-certificates libatomic1 \
     && useradd --system --uid 1000 --create-home node \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=base /usr/local/bin/node /usr/local/bin/node
