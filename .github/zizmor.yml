@@ -1,0 +1,15 @@
+rules:
+  unpinned-uses:
+    config:
+      policies:
+        actions/checkout: ref-pin
+        actions/setup-node: ref-pin
+        actions/attest-build-provenance: ref-pin
+        aquasecurity/trivy-action: ref-pin
+        docker/build-push-action: ref-pin
+        docker/login-action: ref-pin
+        docker/setup-buildx-action: ref-pin
+        google-github-actions/auth: ref-pin
+        google-github-actions/setup-gcloud: ref-pin
+        pnpm/action-setup: ref-pin
+        zizmorcore/zizmor-action: ref-pin
