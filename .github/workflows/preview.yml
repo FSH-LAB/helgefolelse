@@ -12,7 +12,7 @@ on:
 permissions: {}
 
 concurrency:
-  group: preview-${{ github.event.workflow_run.pull_requests[0].number || github.event_name }}
+  group: preview-${{ fromJSON(toJSON(github.event.workflow_run.pull_requests))[0].number || github.event_name }}
   cancel-in-progress: true
 
 jobs:
@@ -24,7 +24,7 @@ jobs:
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.head_repository.full_name == github.repository &&
       github.event.workflow_run.actor.login != 'dependabot[bot]' &&
-      github.event.workflow_run.pull_requests[0].number
+      fromJSON(toJSON(github.event.workflow_run.pull_requests))[0].number
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -43,7 +43,7 @@ jobs:
       - name: Resolve preview
         id: preview
         env:
-          PR_NUMBER: ${{ github.event.workflow_run.pull_requests[0].number }}
+          PR_NUMBER: ${{ fromJSON(toJSON(github.event.workflow_run.pull_requests))[0].number }}
           HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
           [[ "$PR_NUMBER" =~ ^[0-9]+$ && "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]
