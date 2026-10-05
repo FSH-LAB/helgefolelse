@@ -156,19 +156,21 @@ The **Preview** workflow deploys each pull request from this repository as a zer
 ```sh
 export PREVIEW_SERVICE=helgefolelse-preview
 export PREVIEW_EMAIL="helgefolelse-previewer@$PROJECT_ID.iam.gserviceaccount.com"
+export PREVIEW_RUNTIME_EMAIL="helgefolelse-preview-runtime@$PROJECT_ID.iam.gserviceaccount.com"
 
+gcloud iam service-accounts create helgefolelse-previewer --project="$PROJECT_ID"
+gcloud iam service-accounts create helgefolelse-preview-runtime --project="$PROJECT_ID"
 gcloud run deploy "$PREVIEW_SERVICE" \
 	--image=us-docker.pkg.dev/cloudrun/container/hello \
-	--service-account="$RUNTIME_EMAIL" --port=8080 --allow-unauthenticated \
+	--service-account="$PREVIEW_RUNTIME_EMAIL" --port=8080 --allow-unauthenticated \
 	--max-instances=1 --region="$REGION" --project="$PROJECT_ID"
-gcloud iam service-accounts create helgefolelse-previewer --project="$PROJECT_ID"
 gcloud run services add-iam-policy-binding "$PREVIEW_SERVICE" \
 	--region="$REGION" --project="$PROJECT_ID" \
 	--member="serviceAccount:$PREVIEW_EMAIL" --role=roles/run.developer
 gcloud artifacts repositories add-iam-policy-binding "$GAR_REPOSITORY" \
 	--location="$REGION" --project="$PROJECT_ID" \
 	--member="serviceAccount:$PREVIEW_EMAIL" --role=roles/artifactregistry.writer
-gcloud iam service-accounts add-iam-policy-binding "$RUNTIME_EMAIL" \
+gcloud iam service-accounts add-iam-policy-binding "$PREVIEW_RUNTIME_EMAIL" \
 	--project="$PROJECT_ID" --member="serviceAccount:$PREVIEW_EMAIL" \
 	--role=roles/iam.serviceAccountUser
 gcloud iam service-accounts add-iam-policy-binding "$PREVIEW_EMAIL" \
