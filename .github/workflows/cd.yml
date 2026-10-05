@@ -21,6 +21,11 @@ jobs:
       digest: ${{ steps.push.outputs.digest }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+      attestations: write
+      id-token: write
     concurrency:
       group: web-image-${{ github.event.workflow_run.head_sha }}
       cancel-in-progress: false
@@ -56,34 +61,16 @@ jobs:
           IMAGE: ${{ steps.image.outputs.name }}
           SHA: ${{ steps.sha.outputs.sha }}
         run: ./.github/scripts/push-image.sh
-      - name: Record release
-        env:
-          SHA: ${{ steps.sha.outputs.sha }}
-          DIGEST: ${{ steps.push.outputs.digest }}
-          CI_RUN_ID: ${{ github.event.workflow_run.id }}
-          CI_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
-        run: |
-          jq -n --arg sha "$SHA" --arg digest "$DIGEST" --arg ci_run_id "$CI_RUN_ID" \
-            --arg ci_conclusion "$CI_CONCLUSION" \
-            '{sha: $sha, digest: $digest, ci_run_id: ($ci_run_id | tonumber), ci_conclusion: $ci_conclusion}' \
-            > "$RUNNER_TEMP/web-release.json"
-          {
-            echo "### Published web release (CD run $GITHUB_RUN_ID)"
-            echo "- Commit: \`$SHA\`"
-            echo "- Image: \`$DIGEST\`"
-            echo "- CI: [run $CI_RUN_ID](https://github.com/$GITHUB_REPOSITORY/actions/runs/$CI_RUN_ID) ($CI_CONCLUSION)"
-          } >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v4
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v4
         with:
-          name: web-release-${{ steps.sha.outputs.sha }}
-          path: ${{ runner.temp }}/web-release.json
-          if-no-files-found: error
-          retention-days: 90
+          subject-name: ${{ steps.image.outputs.name }}
+          subject-digest: ${{ steps.push.outputs.digest }}
 
   deploy-dev:
     needs: publish
     permissions:
-      actions: read
+      attestations: read
       contents: read
       packages: read
       id-token: write
@@ -96,7 +83,7 @@ jobs:
   deploy-staging:
     needs: [publish, deploy-dev]
     permissions:
-      actions: read
+      attestations: read
       contents: read
       packages: read
       id-token: write
@@ -109,7 +96,7 @@ jobs:
   deploy-production:
     needs: [publish, deploy-staging]
     permissions:
-      actions: read
+      attestations: read
       contents: read
       packages: read
       id-token: write

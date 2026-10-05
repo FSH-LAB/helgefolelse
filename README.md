@@ -141,9 +141,11 @@ Replace shell variable names in the table with their actual values when entering
 
 ### 4. Publish and promote
 
-Push to `main`: successful **CI** starts **CD**, which builds and scans the image, publishes it to GHCR, saves the commit SHA, digest, and passing CI run in the `web-release` artifact (retained for 90 days), then automatically deploys to `dev`. Confirm the CD run succeeds and its dev service responds at `/api/health` before promoting.
+Push to `main`: successful **CI** starts **CD**, which builds and scans the image, publishes it to GHCR with a signed [build provenance attestation](https://docs.github.com/actions/security-for-github-actions/using-artifact-attestations), then promotes it through `dev`, `staging`, and `production`. Staging and production wait for environment reviewers to approve.
 
-Open **Deploy web** in GitHub Actions on `main`, choose `staging` or `production`, and enter the numeric ID from the **successful CD run URL**. The workflow verifies that run and its CI result, downloads the release artifact, verifies the GHCR image, mirrors it to that environment's Artifact Registry, deploys by digest, and checks `/api/health`. Environment reviewers approve protected deployments. Failed CD runs cannot be promoted; keep the previous Cloud Run revision available for rollback. To retry a failed automatic dev deployment after correcting IAM, use **Re-run failed jobs** on its CD run.
+Every deployment first verifies the image's attestation (signed by `cd.yml` on `main`) and that the image was built from the requested commit, then mirrors it to that environment's Artifact Registry, deploys by digest, and checks `/api/health`. You can check a release yourself with `gh attestation verify oci://ghcr.io/<owner>/<repo>-web@<digest> --repo <owner>/<repo>`.
+
+To redeploy or roll back, open **Deploy web** in GitHub Actions on `main`, choose the environment, and enter a commit SHA from `main` that CD has published. To retry a failed automatic deployment after correcting IAM, use **Re-run failed jobs** on its CD run.
 
 ## Structure
 
