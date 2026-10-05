@@ -29,6 +29,15 @@ if [[ -n "$CANARY_PERCENT" ]]; then
   fi
   stable_revision="$(jq -er '[.status.traffic[] | select(.percent > 0)] | max_by(.percent)
     | .revisionName' <<< "$service")"
+  rollback() {
+    echo "::warning::Rolling traffic back to $stable_revision" >&2
+    gcloud run services update-traffic "$SERVICE" "${gcloud_opts[@]}" \
+      --to-revisions "$stable_revision=100"
+  }
+  # Any failure or cancellation after the split must restore the stable revision.
+  trap rollback EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
   gcloud run services update-traffic "$SERVICE" "${gcloud_opts[@]}" --to-revisions \
     "$candidate_revision=$CANARY_PERCENT,$stable_revision=$((100 - CANARY_PERCENT))"
   echo "Canary: $CANARY_PERCENT% to $candidate_revision for ${CANARY_SECONDS}s" >> "$GITHUB_STEP_SUMMARY"
@@ -45,16 +54,15 @@ if [[ -n "$CANARY_PERCENT" ]]; then
     --data-urlencode "interval.startTime=$start" \
     --data-urlencode "interval.endTime=$(date -u +%FT%TZ)" \
     "https://monitoring.googleapis.com/v3/projects/$PROJECT_ID/timeSeries" |
-    jq '[.timeSeries[]?.points[]?.value.int64Value | tonumber] | add // 0')"
+    jq -e '[.timeSeries[]?.points[]?.value.int64Value | tonumber] | add // 0')"
   if (( errors > 0 )); then
-    gcloud run services update-traffic "$SERVICE" "${gcloud_opts[@]}" \
-      --to-revisions "$stable_revision=100"
-    echo "::error::Canary served $errors 5xx responses; rolled back to $stable_revision" >&2
+    echo "::error::Canary $candidate_revision served $errors 5xx responses" >&2
     exit 1
   fi
 fi
 
 gcloud run services update-traffic "$SERVICE" "${gcloud_opts[@]}" \
   --to-revisions "$candidate_revision=100"
+trap - EXIT INT TERM
 echo "url=$(jq -r .status.url <<< "$service")" >> "$GITHUB_OUTPUT"
 echo "Promoted $candidate_revision ($SHA) to 100% traffic" >> "$GITHUB_STEP_SUMMARY"
