@@ -25,9 +25,9 @@ on:
         type: string
 
 permissions:
-  attestations: read
+  attestations: read # Verify published image provenance.
   contents: read
-  packages: read
+  packages: read # Resolve and pull images from GHCR.
 
 concurrency:
   group: deploy-web-${{ inputs.environment }}
@@ -35,6 +35,7 @@ concurrency:
 
 jobs:
   verify:
+    name: Verify release
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -61,14 +62,17 @@ jobs:
         run: ./.github/scripts/verify-release.sh
 
   deploy:
+    name: Deploy release
     needs: verify
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
       contents: read
-      packages: read
-      id-token: write
-    environment: ${{ inputs.environment }}
+      packages: read # Pull the verified image from GHCR.
+      id-token: write # Authenticate to GCP with Workload Identity Federation.
+    environment:
+      name: ${{ inputs.environment }}
+      url: ${{ steps.deploy.outputs.url }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -102,6 +106,7 @@ jobs:
           REPOSITORY: ${{ vars.GAR_REPOSITORY }}
         run: ./.github/scripts/mirror-image.sh
       - name: Deploy Cloud Run service
+        id: deploy
         env:
           IMAGE: ${{ steps.artifact.outputs.image }}
           PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}

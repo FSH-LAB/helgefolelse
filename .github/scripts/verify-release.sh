@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
-# shellcheck disable=SC2154 # SHA, RELEASE, DIGEST, GITHUB_* set by the runner/workflow
+: "${GITHUB_REF:?}" "${GITHUB_REPOSITORY:?}" "${GITHUB_OUTPUT:?}" "${GH_TOKEN:?}"
+SHA="${SHA:-}"
+RELEASE="${RELEASE:-}"
+DIGEST="${DIGEST:-}"
 
 if [[ "$GITHUB_REF" != refs/heads/main ]]; then
   echo '::error::Deployments must run from main' >&2
@@ -43,9 +46,9 @@ if [[ -z "${DIGEST:-}" ]]; then
 fi
 [[ "$SHA" =~ ^[0-9a-f]{40}$ && "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
 
-# Only CD on main signs images, and CD only runs after a green CI push on main.
+# Only CI on main signs images, and publish only runs after the verify job succeeds.
 gh attestation verify "oci://$image@$DIGEST" --repo "$GITHUB_REPOSITORY" \
-  --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/cd.yml" \
+  --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/ci.yml" \
   --source-ref refs/heads/main --deny-self-hosted-runners
 
 # Provenance records CD's trigger SHA, not the built commit, so check the signed image's label.

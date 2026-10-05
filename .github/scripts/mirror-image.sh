@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
-# shellcheck disable=SC2154 # SOURCE, SHA, PROJECT_ID, REGION, REPOSITORY, GITHUB_OUTPUT set by the calling workflow step
+: "${SOURCE:?}" "${SHA:?}" "${PROJECT_ID:?}" "${REGION:?}"
+: "${REPOSITORY:?}" "${GITHUB_OUTPUT:?}"
 
 target="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPOSITORY}/web"
 docker buildx imagetools create --tag "$target:$SHA" "$SOURCE"

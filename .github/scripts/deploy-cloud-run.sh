@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
-# shellcheck disable=SC2154 # Workflow-provided inputs and GITHUB_STEP_SUMMARY are set by the runner.
+: "${IMAGE:?}" "${PROJECT_ID:?}" "${REGION:?}" "${SERVICE:?}" "${SHA:?}"
+: "${GITHUB_OUTPUT:?}" "${GITHUB_STEP_SUMMARY:?}"
 
 gcloud run deploy "$SERVICE" --image "$IMAGE" \
   --project "$PROJECT_ID" --region "$REGION" \
@@ -19,4 +20,8 @@ fi
 
 gcloud run services update-traffic "$SERVICE" --to-latest \
   --project "$PROJECT_ID" --region "$REGION" --quiet
+service_url="$(gcloud run services describe "$SERVICE" \
+  --project "$PROJECT_ID" --region "$REGION" \
+  --format='value(status.url)')"
+echo "url=$service_url" >> "$GITHUB_OUTPUT"
 echo "Promoted revision for $SHA to 100% traffic" >> "$GITHUB_STEP_SUMMARY"
