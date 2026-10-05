@@ -69,7 +69,7 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
-      packages: read # Pull the verified image from GHCR.
+      packages: write # Pull the verified image and move its environment tag in GHCR.
       id-token: write # Authenticate to GCP with Workload Identity Federation.
     environment:
       name: ${{ inputs.environment }}
@@ -116,3 +116,8 @@ jobs:
           SERVICE: ${{ vars.CLOUD_RUN_SERVICE }}
           SHA: ${{ needs.verify.outputs.sha }}
         run: ./.github/scripts/deploy-cloud-run.sh
+      - name: Tag deployed image in GHCR
+        env:
+          SOURCE: ${{ needs.verify.outputs.image }}
+          ENVIRONMENT: ${{ inputs.environment }}
+        run: docker buildx imagetools create --tag "${SOURCE%@*}:$ENVIRONMENT" "$SOURCE"

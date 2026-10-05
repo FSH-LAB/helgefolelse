@@ -11,14 +11,7 @@ candidate="$(gcloud run services describe "$SERVICE" \
   jq -c '.status.traffic[] | select(.tag == "candidate")')"
 candidate_url="$(jq -er .url <<< "$candidate")"
 candidate_revision="$(jq -er .revisionName <<< "$candidate")"
-health_response="$(curl --fail --show-error --silent --retry 5 --retry-delay 2 \
-  --retry-all-errors "$candidate_url/api/health")"
-if ! jq -e --arg sha "$SHA" '.status == "ok" and .commit == $sha' \
-  <<< "$health_response" > /dev/null; then
-  echo "::error::Candidate revision did not report expected commit $SHA" >&2
-  echo "$health_response" >&2
-  exit 1
-fi
+"$(dirname "$0")/smoke-test.sh" "$candidate_url"
 
 gcloud run services update-traffic "$SERVICE" \
   --to-revisions "$candidate_revision=100" \

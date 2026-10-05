@@ -24,6 +24,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Review dependency changes
+        if: github.event_name == 'pull_request'
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: high
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
         if: github.event_name == 'pull_request'
       - name: Build pull request image
@@ -40,9 +45,7 @@ jobs:
         run: |
           docker run --detach --name web --publish 8080:8080 \
             --env GIT_SHA="$GITHUB_SHA" helgefolelse-web:pr
-          if ! curl --fail --show-error --silent --retry 10 --retry-delay 1 \
-            --retry-all-errors http://localhost:8080/api/health |
-            jq -e --arg sha "$GITHUB_SHA" '.status == "ok" and .commit == $sha'; then
+          if ! SHA="$GITHUB_SHA" ./.github/scripts/smoke-test.sh http://localhost:8080; then
             docker logs web
             exit 1
           fi
@@ -146,7 +149,7 @@ jobs:
     permissions:
       attestations: read # Verify the image provenance before deployment.
       contents: read
-      packages: read # Pull the attested GHCR image.
+      packages: write # Pull the attested image and move its environment tag in GHCR.
       id-token: write # Authenticate to GCP with Workload Identity Federation.
     uses: ./.github/workflows/deploy.yml # zizmor: ignore[self-repository] -- actionlint 1.7.12 does not support $/ workflow calls.
     with:
@@ -159,7 +162,7 @@ jobs:
     permissions:
       attestations: read # Verify the image provenance before deployment.
       contents: read
-      packages: read # Pull the attested GHCR image.
+      packages: write # Pull the attested image and move its environment tag in GHCR.
       id-token: write # Authenticate to GCP with Workload Identity Federation.
     uses: ./.github/workflows/deploy.yml # zizmor: ignore[self-repository] -- actionlint 1.7.12 does not support $/ workflow calls.
     with:
@@ -172,7 +175,7 @@ jobs:
     permissions:
       attestations: read # Verify the image provenance before deployment.
       contents: read
-      packages: read # Pull the attested GHCR image.
+      packages: write # Pull the attested image and move its environment tag in GHCR.
       id-token: write # Authenticate to GCP with Workload Identity Federation.
     uses: ./.github/workflows/deploy.yml # zizmor: ignore[self-repository] -- actionlint 1.7.12 does not support $/ workflow calls.
     with:
