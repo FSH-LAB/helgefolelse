@@ -145,7 +145,7 @@ Push to `main`: successful **CI** starts **CD**, which builds and scans the imag
 
 Every deployment first verifies the image's attestation (signed by `cd.yml` on `main`) and that the image was built from the requested commit, then mirrors it to that environment's Artifact Registry, deploys by digest, and checks `/api/health`. You can check a release yourself with `gh attestation verify oci://ghcr.io/<owner>/<repo>-web@<digest> --repo <owner>/<repo>`.
 
-To redeploy or roll back, open **Deploy web** in GitHub Actions on `main`, choose the environment, and enter a commit SHA from `main` that CD has published. To retry a failed automatic deployment after correcting IAM, use **Re-run failed jobs** on its CD run.
+To redeploy or roll back, open **Deploy web** in GitHub Actions on `main`, choose the environment, and enter either a commit SHA or a version tag (for example `v1.2.3`). The tag must point to a commit on `main` that CI and CD have already published; the workflow resolves it to that commit's image, verifies its provenance, and deploys by digest. A version without the `v` prefix also resolves to a matching `v`-prefixed tag. To retry a failed automatic deployment after correcting IAM, use **Re-run failed jobs** on its CD run.
 
 ## Structure
 

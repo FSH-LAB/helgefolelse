@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-# shellcheck disable=SC2154 # SHA, DIGEST, GITHUB_* set by the runner/workflow
+# shellcheck disable=SC2154 # SHA, RELEASE, DIGEST, GITHUB_* set by the runner/workflow
 
 if [[ "$GITHUB_REF" != refs/heads/main ]]; then
   echo '::error::Deployments must run from main' >&2
@@ -9,11 +9,36 @@ fi
 
 image="ghcr.io/${GITHUB_REPOSITORY,,}-web"
 if [[ -z "${DIGEST:-}" ]]; then
-  if [[ ! "$SHA" =~ ^[0-9a-f]{7,40}$ ]]; then
-    echo '::error::SHA must be 7-40 lowercase hex characters' >&2
-    exit 1
+  release="${RELEASE:-$SHA}"
+  if [[ "$release" =~ ^[0-9a-f]{7,40}$ ]]; then
+    SHA="$(gh api "repos/$GITHUB_REPOSITORY/commits/$release" --jq .sha)"
+  else
+    if [[ ! "$release" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9.-]+)?$ ]]; then
+      echo '::error::Release must be a commit SHA or version tag such as v1.2.3' >&2
+      exit 1
+    fi
+    tag="$release"
+    if ! gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" >/dev/null 2>&1; then
+      if [[ "$tag" == v* ]]; then
+        echo "::error::Git tag $tag was not found" >&2
+        exit 1
+      fi
+      tag="v$tag"
+      gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" >/dev/null 2>&1
+    fi
+    SHA="$(gh api "repos/$GITHUB_REPOSITORY/commits/$tag" --jq .sha)"
   fi
-  SHA="$(gh api "repos/$GITHUB_REPOSITORY/commits/$SHA" --jq .sha)"
+fi
+if [[ ! "$SHA" =~ ^[0-9a-f]{40}$ || ! "$DIGEST" =~ ^(sha256:[0-9a-f]{64})?$ ]]; then
+  echo '::error::Could not resolve release to a valid commit and image digest' >&2
+  exit 1
+fi
+if ! git merge-base --is-ancestor "$SHA" origin/main; then
+  echo '::error::Release commit is not on main' >&2
+  exit 1
+fi
+
+if [[ -z "${DIGEST:-}" ]]; then
   DIGEST="$(docker buildx imagetools inspect "$image:$SHA" --format '{{ .Manifest.Digest }}')"
 fi
 [[ "$SHA" =~ ^[0-9a-f]{40}$ && "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
