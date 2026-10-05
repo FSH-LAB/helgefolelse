@@ -161,7 +161,7 @@ jobs:
       contents: read
       packages: read # Pull the attested GHCR image.
       id-token: write # Authenticate to GCP with Workload Identity Federation.
-    uses: ./.github/workflows/deploy.yml
+    uses: ./.github/workflows/deploy.yml # zizmor: ignore[self-repository] -- actionlint 1.7.12 does not support $/ workflow calls.
     with:
       environment: dev
       sha: ${{ needs.publish.outputs.sha }}
@@ -174,7 +174,7 @@ jobs:
       contents: read
       packages: read # Pull the attested GHCR image.
       id-token: write # Authenticate to GCP with Workload Identity Federation.
-    uses: ./.github/workflows/deploy.yml
+    uses: ./.github/workflows/deploy.yml # zizmor: ignore[self-repository] -- actionlint 1.7.12 does not support $/ workflow calls.
     with:
       environment: staging
       sha: ${{ needs.publish.outputs.sha }}
@@ -187,7 +187,7 @@ jobs:
       contents: read
       packages: read # Pull the attested GHCR image.
       id-token: write # Authenticate to GCP with Workload Identity Federation.
-    uses: ./.github/workflows/deploy.yml
+    uses: ./.github/workflows/deploy.yml # zizmor: ignore[self-repository] -- actionlint 1.7.12 does not support $/ workflow calls.
     with:
       environment: production
       sha: ${{ needs.publish.outputs.sha }}
