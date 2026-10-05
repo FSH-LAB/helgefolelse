@@ -142,7 +142,7 @@ Under repository **Settings > Environments**, create `dev`, `staging`, and `prod
 
 Replace shell variable names in the table with their actual values when entering them in GitHub. If the GHCR image is private, grant this repository's Actions read access to its package under the package's settings.
 
-To roll production out gradually, also set these optional variables on that environment. The candidate gets `CANARY_PERCENT` of traffic for `CANARY_SECONDS`; any 5xx response from it in Cloud Monitoring, or any failure or cancellation during the window, moves traffic back to the previous revision. Cloud Run metrics arrive up to about three minutes late, so keep the window well above 180 seconds.
+To roll production out gradually, also set these optional variables on that environment. The candidate gets `CANARY_PERCENT` of traffic for `CANARY_SECONDS`; any 5xx response from it in Cloud Monitoring, or any failure or cancellation during the window, moves traffic back to the previous revision. Cloud Run metrics arrive up to about three minutes late, so the script waits an extra 180 seconds after the window before checking them.
 
 | Variable         | Example | Purpose                                      |
 | ---------------- | ------- | -------------------------------------------- |
@@ -151,7 +151,7 @@ To roll production out gradually, also set these optional variables on that envi
 
 ### 4. Optional: pull request previews
 
-The **Preview** workflow deploys each pull request from this repository as a zero-traffic `pr-<number>` revision and shows its URL on the PR; closing the PR removes the tag. Forks and Dependabot PRs are skipped. Previews run untrusted branch code, so give them their own Cloud Run service and deployer in the `dev` project. With the step 1 variables still set for `dev`:
+The PR's `CI/CD` run builds the image without any write or cloud permissions and uploads it as an artifact. Once that run passes, the **Preview** workflow, which always runs the trusted copy on `main`, publishes the image to GHCR as `pr-<number>`, deploys it as a zero-traffic `pr-<number>` revision, and shows its URL on the PR. A daily sweep removes the tags of closed PRs. Forks and Dependabot PRs are skipped. Previews run untrusted branch code, so give them their own Cloud Run service, runtime identity, and deployer in the `dev` project. With the step 1 variables still set for `dev`:
 
 ```sh
 export PREVIEW_SERVICE=helgefolelse-preview
@@ -178,15 +178,15 @@ gcloud iam service-accounts add-iam-policy-binding "$PREVIEW_EMAIL" \
 	--member="principalSet://iam.googleapis.com/projects/$PROJECT_NUMBER/locations/global/workloadIdentityPools/github-actions/attribute.environment/preview"
 ```
 
-PR runs use a `refs/pull/<number>/merge` ref, so allow the `preview` environment from any ref while keeping `dev` on `main`:
+Preview deployments only run from `main`, so the provider can require `main` for both environments; the environment binding keeps their deployers apart:
 
 ```sh
 gcloud iam workload-identity-pools providers update-oidc github \
 	--location=global --project="$PROJECT_ID" --workload-identity-pool=github-actions \
-	--attribute-condition="assertion.repository == '$REPO' && ((assertion.ref == 'refs/heads/main' && assertion.environment == 'dev') || assertion.environment == 'preview')"
+	--attribute-condition="assertion.repository == '$REPO' && assertion.ref == 'refs/heads/main' && (assertion.environment == 'dev' || assertion.environment == 'preview')"
 ```
 
-Finally, create a `preview` GitHub Environment **without** a branch restriction or reviewers, and give it the step 3 variables with `CLOUD_RUN_SERVICE` set to `$PREVIEW_SERVICE` and `GCP_DEPLOY_SERVICE_ACCOUNT` set to `$PREVIEW_EMAIL`. Until it exists, the Preview workflow fails without affecting CI or deployments.
+Finally, create a `preview` GitHub Environment restricted to `main` without reviewers, and give it the step 3 variables with `CLOUD_RUN_SERVICE` set to `$PREVIEW_SERVICE` and `GCP_DEPLOY_SERVICE_ACCOUNT` set to `$PREVIEW_EMAIL`. Until it exists, the Preview workflow fails without affecting CI or deployments.
 
 ### 5. Publish and promote
 

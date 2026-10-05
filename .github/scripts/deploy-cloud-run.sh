@@ -5,6 +5,8 @@ set -euo pipefail
 PREVIEW_TAG="${PREVIEW_TAG:-}"
 CANARY_PERCENT="${CANARY_PERCENT:-}"
 CANARY_SECONDS="${CANARY_SECONDS:-300}"
+# Cloud Run request metrics can take up to 180s to become queryable.
+metrics_delay=180
 tag="${PREVIEW_TAG:-candidate}"
 gcloud_opts=(--project "$PROJECT_ID" --region "$REGION" --quiet)
 
@@ -40,9 +42,9 @@ if [[ -n "$CANARY_PERCENT" ]]; then
   trap 'exit 143' TERM
   gcloud run services update-traffic "$SERVICE" "${gcloud_opts[@]}" --to-revisions \
     "$candidate_revision=$CANARY_PERCENT,$stable_revision=$((100 - CANARY_PERCENT))"
-  echo "Canary: $CANARY_PERCENT% to $candidate_revision for ${CANARY_SECONDS}s" >> "$GITHUB_STEP_SUMMARY"
+  echo "Canary: $CANARY_PERCENT% to $candidate_revision for ${CANARY_SECONDS}s (+${metrics_delay}s metrics delay)" >> "$GITHUB_STEP_SUMMARY"
   start="$(date -u +%FT%TZ)"
-  sleep "$CANARY_SECONDS"
+  sleep "$((CANARY_SECONDS + metrics_delay))"
 
   filter="metric.type=\"run.googleapis.com/request_count\""
   filter+=" AND resource.labels.service_name=\"$SERVICE\""
