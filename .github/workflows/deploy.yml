@@ -29,15 +29,14 @@ permissions:
   contents: read
   packages: read # Resolve and pull images from GHCR.
 
-concurrency:
-  group: deploy-web-${{ inputs.environment }}
-  cancel-in-progress: false
-
 jobs:
   verify:
     name: Verify release
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    concurrency:
+      group: verify-release-${{ inputs.environment }}-${{ github.run_id }}
+      cancel-in-progress: false
     outputs:
       sha: ${{ steps.release.outputs.sha }}
       image: ${{ steps.release.outputs.image }}
@@ -74,6 +73,9 @@ jobs:
     environment:
       name: ${{ inputs.environment }}
       url: ${{ steps.deploy.outputs.url }}
+    concurrency:
+      group: deploy-web-${{ inputs.environment }}
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
