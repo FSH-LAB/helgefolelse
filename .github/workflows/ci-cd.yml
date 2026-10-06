@@ -108,10 +108,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
-      contents: read
-      packages: write
-      attestations: write
-      id-token: write
+      contents: read # Check out the source to build.
+      packages: write # Publish the image to GHCR.
+      attestations: write # Publish build provenance.
+      id-token: write # Sign provenance using GitHub OIDC.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -157,11 +157,11 @@ jobs:
   deploy-dev:
     needs: publish
     permissions:
-      attestations: read
-      contents: read
-      packages: write
-      id-token: write
-    uses: ./.github/workflows/deploy.yml
+      attestations: read # Verify image provenance.
+      contents: read # Check out trusted deployment scripts.
+      packages: write # Pull the image and update its environment tag.
+      id-token: write # Authenticate to GCP using Workload Identity Federation.
+    uses: ./.github/workflows/deploy.yml # zizmor: ignore[self-repository] -- actionlint 1.7.12 does not support $/ workflow calls.
     with:
       environment: dev
       sha: ${{ github.sha }}
@@ -170,11 +170,11 @@ jobs:
   deploy-staging:
     needs: [publish, deploy-dev]
     permissions:
-      attestations: read
-      contents: read
-      packages: write
-      id-token: write
-    uses: ./.github/workflows/deploy.yml
+      attestations: read # Verify image provenance.
+      contents: read # Check out trusted deployment scripts.
+      packages: write # Pull the image and update its environment tag.
+      id-token: write # Authenticate to GCP using Workload Identity Federation.
+    uses: ./.github/workflows/deploy.yml # zizmor: ignore[self-repository] -- actionlint 1.7.12 does not support $/ workflow calls.
     with:
       environment: staging
       sha: ${{ github.sha }}
@@ -183,11 +183,11 @@ jobs:
   deploy-production:
     needs: [publish, deploy-staging]
     permissions:
-      attestations: read
-      contents: read
-      packages: write
-      id-token: write
-    uses: ./.github/workflows/deploy.yml
+      attestations: read # Verify image provenance.
+      contents: read # Check out trusted deployment scripts.
+      packages: write # Pull the image and update its environment tag.
+      id-token: write # Authenticate to GCP using Workload Identity Federation.
+    uses: ./.github/workflows/deploy.yml # zizmor: ignore[self-repository] -- actionlint 1.7.12 does not support $/ workflow calls.
     with:
       environment: production
       sha: ${{ github.sha }}
@@ -199,7 +199,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
-      contents: write
+      contents: write # Create the release tag and GitHub Release.
     steps:
       - name: Create release
         env:

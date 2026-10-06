@@ -25,9 +25,9 @@ on:
         type: string
 
 permissions:
-  attestations: read
-  contents: read
-  packages: read
+  attestations: read # Verify published image provenance.
+  contents: read # Check out scripts and validate commit ancestry.
+  packages: read # Resolve and pull images from GHCR.
 
 jobs:
   verify:
@@ -67,9 +67,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
-      contents: read
-      packages: write
-      id-token: write
+      contents: read # Check out trusted scripts and smoke tests.
+      packages: write # Pull the verified image and update its environment tag.
+      id-token: write # Authenticate to GCP using Workload Identity Federation.
     environment:
       name: ${{ inputs.environment }}
       url: ${{ steps.promote.outputs.url }}
