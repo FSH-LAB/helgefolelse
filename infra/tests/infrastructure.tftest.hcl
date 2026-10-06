@@ -148,3 +148,40 @@ run "reject_invalid_billing_account" {
 
   expect_failures = [var.billing_account_id]
 }
+
+run "infrastructure_ci_disabled_by_default" {
+  command = plan
+
+  assert {
+    condition     = length(google_service_account.infrastructure) == 0 && length(google_project_iam_member.infrastructure) == 0
+    error_message = "CI provisioning permissions must be explicitly enabled by an operator."
+  }
+}
+
+run "infrastructure_ci_identity_boundaries" {
+  command = plan
+
+  variables {
+    enable_infrastructure_ci = true
+  }
+
+  assert {
+    condition     = length(google_service_account.infrastructure) == 2 && google_service_account.infrastructure["plan"].account_id != google_service_account.infrastructure["apply"].account_id
+    error_message = "Planning and applying must use separate identities."
+  }
+
+  assert {
+    condition     = alltrue([for grant in google_project_iam_member.infrastructure : !contains(["roles/owner", "roles/editor", "roles/resourcemanager.projectCreator", "roles/billing.user"], grant.role)])
+    error_message = "Routine CI must not receive broad owner/editor or initial provisioning permissions."
+  }
+
+  assert {
+    condition     = alltrue([for key, grant in google_project_iam_member.infrastructure : contains(tolist(local.infrastructure_roles.plan), grant.role) if startswith(key, "plan/")]) && length(google_storage_bucket_iam_member.infrastructure_state) == 2
+    error_message = "The plan identity gets read access plus bucket-scoped state/lock object access."
+  }
+
+  assert {
+    condition     = google_iam_workload_identity_pool_provider.infrastructure[0].attribute_condition == "assertion.repository == 'FSH-LAB/helgefolelse' && assertion.ref == 'refs/heads/main' && assertion.workflow_ref == 'FSH-LAB/helgefolelse/.github/workflows/infrastructure.yml@refs/heads/main' && assertion.environment in ['infra-plan-dev', 'infra-dev']" && alltrue([for grant in google_service_account_iam_member.infrastructure_federation : grant.role == "roles/iam.workloadIdentityUser"])
+    error_message = "Only the trusted infrastructure workflow on main may impersonate environment-specific identities."
+  }
+}

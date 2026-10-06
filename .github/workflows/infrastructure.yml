@@ -1,0 +1,220 @@
+name: Infrastructure
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Adopted environment to plan or apply
+        required: true
+        type: choice
+        options: [dev, staging, production]
+      operation:
+        description: Apply requires a fresh plan and environment approval
+        required: true
+        type: choice
+        default: plan
+        options: [plan, apply]
+  push:
+    branches: [main]
+    paths:
+      - infra/**
+      - .github/scripts/infrastructure*
+      - .github/workflows/infrastructure.yml
+  schedule:
+    - cron: "17 5 * * *"
+
+permissions:
+  contents: read
+
+env:
+  TERRAFORM_VERSION: 1.9.8
+  TF_IN_AUTOMATION: "true"
+
+jobs:
+  select:
+    name: Select environments
+    if: github.ref == 'refs/heads/main' && vars.INFRA_CI_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    concurrency:
+      group: infrastructure-select-${{ github.run_id }}
+      cancel-in-progress: false
+    outputs:
+      matrix: ${{ steps.select.outputs.matrix }}
+      operation: ${{ steps.select.outputs.operation }}
+    steps:
+      - name: Select onboarded environments
+        id: select
+        env:
+          CONFIGURED: ${{ vars.INFRA_CI_ENVIRONMENTS || '["dev"]' }}
+          REQUESTED: ${{ inputs.environment || 'dev' }}
+          OPERATION: ${{ inputs.operation || 'plan' }}
+          EVENT: ${{ github.event_name }}
+          AUTO_DEV: ${{ vars.INFRA_DEV_AUTO_APPLY }}
+        run: |
+          configured="$(printf '%s' "$CONFIGURED" | jq -ce '
+            select(type == "array" and length > 0 and length <= 3) |
+            select(all(.[]; . == "dev" or . == "staging" or . == "production")) | unique')"
+          if [[ "$EVENT" == schedule ]]; then
+            environments="$configured"
+            operation=drift
+          else
+            printf '%s' "$configured" | jq -e --arg requested "$REQUESTED" 'index($requested) != null' > /dev/null
+            environments="$(jq -cn --arg environment "$REQUESTED" '[$environment]')"
+            operation="$OPERATION"
+            if [[ "$EVENT" == push && "$AUTO_DEV" == true ]]; then operation=apply; fi
+          fi
+          [[ "$operation" =~ ^(plan|apply|drift)$ ]]
+          echo "matrix=$(printf '%s' "$environments" | jq -c '{environment: .}')" >> "$GITHUB_OUTPUT"
+          echo "operation=$operation" >> "$GITHUB_OUTPUT"
+
+  plan:
+    name: Plan ${{ matrix.environment }}
+    needs: select
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.select.outputs.matrix) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write # Federate as the infrastructure plan identity.
+      issues: write # Report drift or failed scheduled checks without applying.
+    environment: infra-plan-${{ matrix.environment }}
+    concurrency:
+      group: infrastructure-plan-${{ matrix.environment }}
+      cancel-in-progress: false
+    outputs:
+      changed: ${{ steps.plan.outputs.changed }}
+    env:
+      ENVIRONMENT: ${{ matrix.environment }}
+      PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+      STATE_PREFIX: ${{ vars.TF_STATE_PREFIX }}
+      TFVARS_JSON: ${{ vars.TF_VARS_JSON }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+      - uses: actions/create-github-app-token@f8d387b68d61c58ab83c6c016672934102569859 # v3.0.0
+        id: github-app
+        with:
+          app-id: ${{ vars.TF_GITHUB_APP_ID }}
+          private-key: ${{ secrets.TF_GITHUB_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-administration: read
+          permission-variables: read
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.TF_WIF_PROVIDER }}
+          service_account: ${{ vars.TF_PLAN_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+      - name: Plan or detect drift
+        id: plan
+        env:
+          GITHUB_TOKEN: ${{ steps.github-app.outputs.token }}
+          OPERATION: ${{ needs.select.outputs.operation }}
+        run: |
+          command=plan
+          if [[ "$OPERATION" == drift ]]; then command=drift; fi
+          bash .github/scripts/infrastructure.sh "$command"
+      - name: Report drift or failed check
+        if: always() && needs.select.outputs.operation == 'drift'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CHANGED: ${{ steps.plan.outputs.changed }}
+          RESULT: ${{ steps.plan.outcome }}
+        run: |
+          title="Infrastructure drift: $ENVIRONMENT"
+          issues="$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "$title in:title" --json number,title)"
+          issue="$(printf '%s' "$issues" | jq -r --arg title "$title" '[.[] | select(.title == $title)][0].number // empty')"
+          if [[ "$RESULT" != success ]]; then
+            mkdir -p infra
+            printf 'Infrastructure check failed for %s. Inspect run %s/%s/actions/runs/%s.\n' \
+              "$ENVIRONMENT" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" > infra/summary.md
+          fi
+          if [[ "$CHANGED" == true || "$RESULT" != success ]]; then
+            if [[ -n "$issue" ]]; then
+              gh issue edit "$issue" --repo "$GITHUB_REPOSITORY" --body-file infra/summary.md
+            else
+              gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body-file infra/summary.md
+            fi
+          elif [[ -n "$issue" ]]; then
+            gh issue close "$issue" --repo "$GITHUB_REPOSITORY" --comment 'Scheduled plan is clean; no automatic remediation was performed.'
+          fi
+      - name: Remove sensitive runner files
+        if: always()
+        run: rm -f infra/*.tfplan infra/*.log infra/plan.json infra/changes.json infra/ci.tfvars.json
+
+  apply:
+    name: Apply ${{ matrix.environment }}
+    needs: [select, plan]
+    if: needs.select.outputs.operation == 'apply' && needs.plan.outputs.changed == 'true'
+    strategy:
+      matrix: ${{ fromJSON(needs.select.outputs.matrix) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write # Federate as the approved infrastructure apply identity.
+    environment: infra-${{ matrix.environment }}
+    concurrency:
+      group: deploy-web-${{ matrix.environment }}
+      cancel-in-progress: false
+    env:
+      ENVIRONMENT: ${{ matrix.environment }}
+      PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+      STATE_PREFIX: ${{ vars.TF_STATE_PREFIX }}
+      TFVARS_JSON: ${{ vars.TF_VARS_JSON }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          package-manager-cache: false
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+      - uses: actions/create-github-app-token@f8d387b68d61c58ab83c6c016672934102569859 # v3.0.0
+        id: github-app
+        with:
+          app-id: ${{ vars.TF_GITHUB_APP_ID }}
+          private-key: ${{ secrets.TF_GITHUB_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-administration: read
+          permission-variables: read
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.TF_WIF_PROVIDER }}
+          service_account: ${{ vars.TF_APPLY_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+      - name: Apply approved plan and verify convergence
+        env:
+          GITHUB_TOKEN: ${{ steps.github-app.outputs.token }}
+          GH_TOKEN: ${{ github.token }}
+        run: bash .github/scripts/infrastructure.sh apply
+      - name: Smoke test existing application release
+        env:
+          REGION: ${{ vars.GCP_REGION }}
+          SERVICE: ${{ vars.CLOUD_RUN_SERVICE }}
+        run: |
+          service="$(gcloud run services describe "$SERVICE" --project "$PROJECT_ID" --region "$REGION" --format=json)"
+          SMOKE_URL="$(printf '%s' "$service" | jq -er '.status.url')"
+          SHA="$(curl --fail --silent --show-error "$SMOKE_URL/api/health" | jq -er '.commit')"
+          export SMOKE_URL SHA
+          node --test apps/web/tests/smoke.mjs
+      - name: Remove sensitive runner files
+        if: always()
+        run: rm -f infra/*.tfplan infra/*.log infra/plan.json infra/changes.json infra/ci.tfvars.json

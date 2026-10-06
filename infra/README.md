@@ -63,8 +63,6 @@ Confirm Terraform's state-copy prompt and verify `terraform -chdir=infra state l
 
 [backend.tfbackend.example](backend.tfbackend.example) shows equivalent GCS backend settings. GCS provides locking, and the private bucket has versioning and public-access prevention. Restrict access to infrastructure operators; backend operations require permission to read/write state and lock objects, such as bucket-scoped `roles/storage.objectAdmin`. The application deployer does not need state access. Commit provider lock files; local settings, backend overrides, plans, state, and caches are ignored by Git and excluded from the application image.
 
-
-
 **Import before applying.** Create the ignored `infra/imports.tf` with import blocks for each existing project, application resource, and IAM grant that needs adoption. For example, the project import is:
 
 ```hcl
@@ -142,6 +140,99 @@ Then plan and apply as above. New environments need no imports. Do not later tog
 Select the environment's existing state backend and data directory, then run `plan` and apply the reviewed saved plan. Terraform provisioning is intentionally not part of application deployments and does not get the application's OIDC deployer credentials. The provider only trusts the exact GitHub repository, `refs/heads/main`, and matching environment, and its deployer binding is environment-specific.
 
 If a private GHCR package is used, its repository Actions access must also be granted through GitHub package settings.
+
+## Infrastructure Delivery
+
+[The infrastructure workflow](../.github/workflows/infrastructure.yml) is separate from application CD. It runs only on `main` and only after the repository variable `INFRA_CI_ENABLED` is explicitly set to `true`. Pull requests remain credential-free. Nothing in the workflow provisions an empty environment, migrates state, grants initial permissions, or enables its own automation.
+
+### 1. Adopt And Verify Remote State
+
+Complete imports and the GCS migration above for each environment before onboarding it. Keep the existing state; never initialize an empty replacement. Check the backend bucket/prefix and `terraform state list`, including the project, state bucket, and Cloud Run service. Pause application CD while performing operator provisioning or state migration. Routine CI refuses a backend missing these addresses.
+
+Use `auto_create_network = false` for a new project. Match the recorded setting for an imported project: changing this creation-time setting can require replacement. The Trivy `GCP-0010` exception in [the scanner policy](../.trivyignore.yaml) expires on January 1, 2027. Audit inherited default networks/firewall rules before that date; disabling creation is not a cleanup of an existing network. Do not remove project deletion protection to satisfy a scanner.
+
+### 2. Provision Dedicated Identities
+
+Set `enable_infrastructure_ci = true` in the environment's operator variable file, then use an authorized operator to plan and apply against its existing state:
+
+```sh
+terraform -chdir=infra plan -var-file="$ENV.tfvars" -out="$ENV-ci.tfplan"
+terraform -chdir=infra apply "$ENV-ci.tfplan"
+```
+
+Review the saved plan first. Expect two service accounts, a separate WIF provider, project-scoped roles, bucket-scoped object access, runtime-account impersonation for apply, and a seven-day lifecycle rule limited to `ci-plans/`. There must be no unexpected replacements or deletions. Both identities need state-object access because planning acquires a lock. This is sensitive access, not an untrusted-PR credential. The plan account otherwise receives read roles; the apply account receives resource-administration roles within this project, not Owner, Editor, billing-link, or project-creation permissions. IAM administration is powerful even when project-scoped: restrict who can edit the trusted workflow.
+
+The WIF provider requires this repository, `main`, the exact infrastructure workflow path, and the corresponding infrastructure environment. The application deployer remains separate and gets no state access. Project creation/billing and initial trust remain controlled operator tasks.
+
+### 3. Configure Operator-Owned GitHub Gates
+
+With the correct environment backend still selected and a GitHub administrator authenticated, run from the repository root:
+
+```sh
+ENVIRONMENT="$ENV" bash infra/scripts/configure-infrastructure.sh
+```
+
+The helper reads applied Terraform outputs, copies the effective nonsecret configuration to `TF_VARS_JSON`, and configures `infra-plan-ENV` and `infra-ENV` with main-only deployment policies. It never enables repository automation. These approval environments deliberately live outside the state applied by routine CI, so that workflow cannot modify its own gates. The helper is operator-only and must not be called by a cloud-authenticated CI job.
+
+Plan environments have no required reviewers. Apply environments require the Terraform-configured reviewer IDs; initial dev setup defaults to the authenticated administrator if its list is empty. Override with `REVIEWER_IDS='[12345,67890]'` when appropriate. Staging/production prevent self-review, and all infrastructure environments disable administrator bypass. Staging/production therefore need a reviewer other than the workflow initiator; a solo operator cannot independently approve their own production change.
+
+Register a GitHub App, install it only on this repository, and grant **Administration: read** and **Variables: read**. In each infrastructure environment, set `TF_GITHUB_APP_ID` and the encrypted secret `TF_GITHUB_APP_PRIVATE_KEY`. Enter the private key directly through GitHub Settings or `gh secret set`; do not put it in Terraform inputs/state. The workflow mints short-lived, explicitly scoped installation tokens and revokes them on completion. It uses read-only GitHub tokens because routine changes to GitHub governance are policy-blocked.
+
+The helper supplies these environment variables from Terraform outputs:
+
+| Variable                                                | Purpose                                                  |
+| ------------------------------------------------------- | -------------------------------------------------------- |
+| `GCP_PROJECT_ID`, `GCP_REGION`, `CLOUD_RUN_SERVICE`     | Target project and application checks                    |
+| `TF_STATE_BUCKET`, `TF_STATE_PREFIX`                    | Exact adopted GCS backend                                |
+| `TF_WIF_PROVIDER`                                       | Dedicated infrastructure federation provider             |
+| `TF_PLAN_SERVICE_ACCOUNT` or `TF_APPLY_SERVICE_ACCOUNT` | Environment-specific identity                            |
+| `TF_VARS_JSON`                                          | Complete effective Terraform inputs, without credentials |
+
+If inputs change, update both infrastructure environments consistently through the operator helper after applying the corresponding operator change. Plans bind to the inputs and refuse changed inputs at approval time. Do not place credentials in `TF_VARS_JSON`; adding future secret inputs requires a separate design.
+
+Enable required code-owner review for `main`, require the existing CI verification checks, disallow direct pushes, and restrict bypass. [CODEOWNERS](../.github/CODEOWNERS) covers workflows, infrastructure, and scanner exceptions. An ownership file alone does not enforce approval.
+
+### 4. Enable Manual Plan And Apply
+
+Merge the reviewed implementation to `main` before using its cloud trust. Start with dev only:
+
+```sh
+gh variable set INFRA_CI_ENVIRONMENTS --repo FSH-LAB/helgefolelse --body '["dev"]'
+gh variable set INFRA_DEV_AUTO_APPLY --repo FSH-LAB/helgefolelse --body false
+gh variable set INFRA_CI_ENABLED --repo FSH-LAB/helgefolelse --body true
+gh workflow run infrastructure.yml --ref main -f environment=dev -f operation=plan
+```
+
+After reviewing the dry-run summary, dispatch `operation=apply`. That run creates a **new** saved plan, then waits for the apply environment's approval. Review that run's summary before approving; approval never substitutes a different plan. A no-change plan skips apply. After successful dev testing, onboard staging/production and add them to `INFRA_CI_ENVIRONMENTS`, for example `["dev","staging","production"]`. Apply the same trusted configuration commit in order, generating a separate plan for each environment. This small-project workflow relies on the production reviewer to verify prior-environment results rather than introducing an additional promotion service.
+
+Binary plans are stored only in the private state bucket under `ci-plans/ENV/RUN/ATTEMPT/SHA/`, not in GitHub artifacts. The apply job retrieves that run's saved plan and never generates a replacement before applying. Small `jq` checks use the plan's native timestamp and variables to enforce a four-hour expiry and matching environment inputs. Both jobs check out the same commit, use pinned Terraform and locked providers, and apply rejects a superseded main commit. No custom approval manifest or plan fingerprint is maintained. Treat bucket access as privileged: the saved-plan path is run-specific, but is not a signature or independent protection against a compromised identity with write access.
+
+Terraform rejects saved plans invalidated by Terraform state changes. It does not detect every out-of-band cloud edit before applying. This lean pipeline intentionally removes the custom fresh-plan comparison; scheduled drift detection, short approval windows, and coordinated deployments reduce that risk but do not eliminate it. Investigate unexpected edits, then generate a new plan and obtain a new approval. A post-apply plan still checks convergence.
+
+Terraform apply and application deploy use the same `deploy-web-ENV` concurrency group, with cancellation disabled. State locking remains enabled with a five-minute timeout. GitHub concurrency is mutual exclusion, not a FIFO queue: pending runs may be superseded. The main-commit and plan-expiry checks reject superseded or expired approvals. Operator commands outside Actions must also coordinate with deployments.
+
+### 5. Policy Checks And Drift Detection
+
+PR CI runs Terraform mock tests, executable plan-policy/runner tests, Trivy configuration scanning, workflow lint/security auditing, and existing application checks. Routine live plans block deletes/replacements, project/state-bucket/control-plane changes, all IAM changes, GitHub governance changes, and unsafe Cloud Run runtime-identity/protection changes. These changes use an operator-reviewed plan, not a broad CI bypass. Ordinary service/registry configuration remains eligible for the saved-plan path. Protection in policy complements `prevent_destroy`; removing a protected resource block can otherwise remove its Terraform lifecycle protection.
+
+The daily scheduled workflow plans every onboarded environment using the read identity. It opens or updates one `Infrastructure drift: ENV` issue for configuration differences or failed checks, and closes it when a later plan is clean. It never applies or changes state to hide drift. Investigate whether a difference is an unauthorized cloud edit, a newly merged desired change, or an expected emergency change before deciding how to reconcile it. Terraform intentionally ignores CD-owned image/environment/revision/traffic fields, so those changes are outside this drift coverage.
+
+### 6. Enable Automatic Dev Apply Last
+
+After a successful manual dev apply, rerun the operator helper against dev with `DEV_AUTO_APPLY_READY=true` to remove only dev's reviewer gate, then enable the repository flag:
+
+```sh
+ENVIRONMENT=dev DEV_AUTO_APPLY_READY=true bash infra/scripts/configure-infrastructure.sh
+gh variable set INFRA_DEV_AUTO_APPLY --repo FSH-LAB/helgefolelse --body true
+```
+
+Infrastructure-related pushes to `main` now plan and apply dev automatically when policies pass. Staging/production remain manual and approval-gated. Disable auto-dev with the same variable set to `false`; set `INFRA_CI_ENABLED=false` to pause the entire infrastructure workflow. Rerunning the helper normally reinstates dev's reviewer requirement.
+
+### Recovery
+
+If apply partially fails, preserve the same remote state and inspect actual resources using an authorized operator. Do not rerun an old binary plan or initialize new state. Generate a new plan after understanding the failure. Recover a state object from bucket version history only for verified state loss/corruption, not to undo cloud changes. Infrastructure rollback is a new reviewed configuration change; application rollback remains digest-based CD. Keep access to a separate recovery operator because CI cannot repair its own identity, WIF trust, or approval gates.
+
+Sensitive Terraform output is captured on the ephemeral runner rather than printed publicly, and removed at job completion. Failed commands report the stage but omit provider details; reproduce with operator credentials in a private terminal. After apply, a clean plan verifies convergence and the existing smoke suite checks the currently deployed app commit, not the infrastructure commit. A smoke failure does not automatically undo infrastructure.
 
 ## Checks
 

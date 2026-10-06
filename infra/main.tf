@@ -20,12 +20,13 @@ locals {
 }
 
 resource "google_project" "environment" {
-  project_id      = var.project_id
-  name            = coalesce(var.project_name, "Helgefolelse ${var.environment}")
-  billing_account = var.billing_account_id
-  org_id          = var.organization_id
-  folder_id       = var.folder_id
-  deletion_policy = "PREVENT"
+  project_id          = var.project_id
+  name                = coalesce(var.project_name, "Helgefolelse ${var.environment}")
+  auto_create_network = var.auto_create_network
+  billing_account     = var.billing_account_id
+  org_id              = var.organization_id
+  folder_id           = var.folder_id
+  deletion_policy     = "PREVENT"
 
   lifecycle {
     prevent_destroy = true
@@ -54,6 +55,19 @@ resource "google_storage_bucket" "state" {
 
   versioning {
     enabled = true
+  }
+
+  dynamic "lifecycle_rule" {
+    for_each = var.enable_infrastructure_ci ? [1] : []
+    content {
+      action {
+        type = "Delete"
+      }
+      condition {
+        age            = 7
+        matches_prefix = ["ci-plans/"]
+      }
+    }
   }
 
   depends_on = [google_project_service.required]

@@ -1,11 +1,12 @@
-project_id         = "your-dev-project-id"
-project_name       = "Helgefolelse dev"
-billing_account_id = "ABCDEF-123456-ABCDEF"
-organization_id    = null
-folder_id          = null
-environment        = "dev"
-region             = "europe-north2"
-state_bucket_name  = null
+project_id          = "your-dev-project-id"
+project_name        = "Helgefolelse dev"
+auto_create_network = false
+billing_account_id  = "ABCDEF-123456-ABCDEF"
+organization_id     = null
+folder_id           = null
+environment         = "dev"
+region              = "europe-north2"
+state_bucket_name   = null
 
 github_owner      = "FSH-LAB"
 github_repository = "helgefolelse"
@@ -14,3 +15,5 @@ cloud_run_service = "helgefolelse-web"
 
 manage_github     = true
 reviewer_user_ids = []
+
+enable_infrastructure_ci = false

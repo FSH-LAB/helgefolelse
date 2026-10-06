@@ -9,6 +9,12 @@ variable "project_name" {
   default     = null
 }
 
+variable "auto_create_network" {
+  description = "Use false for new projects. Match imported projects; changing this creation-time setting can require project replacement."
+  type        = bool
+  default     = true
+}
+
 variable "billing_account_id" {
   description = "Existing billing account to link to the managed project."
   type        = string
@@ -77,6 +83,12 @@ variable "manage_github" {
   description = "Manage the GitHub environment, main policy, and variables. Import existing settings first."
   type        = bool
   default     = true
+}
+
+variable "enable_infrastructure_ci" {
+  description = "Provision dedicated infrastructure CI identities after adoption and remote-state migration. Approval environments are configured separately by an operator."
+  type        = bool
+  default     = false
 }
 
 variable "reviewer_user_ids" {
