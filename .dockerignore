@@ -1,5 +1,6 @@
 .git
 .gitignore
+infra
 **/node_modules
 **/.next
 **/.turbo

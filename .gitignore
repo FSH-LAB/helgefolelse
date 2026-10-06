@@ -6,3 +6,12 @@ node_modules
 !.env.example
 *.tsbuildinfo
 /out/
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+*.tfvars
+*.tfvars.json
+*.tfbackend
+infra/imports.tf
+infra/backend_override.tf
