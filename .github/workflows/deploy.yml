@@ -26,7 +26,7 @@ on:
 
 permissions:
   attestations: read # Verify published image provenance.
-  contents: read
+  contents: read # Check out scripts and validate commit ancestry.
   packages: read # Resolve and pull images from GHCR.
 
 jobs:
@@ -67,12 +67,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
-      contents: read
-      packages: write # Pull the verified image and move its environment tag in GHCR.
-      id-token: write # Authenticate to GCP with Workload Identity Federation.
+      contents: read # Check out trusted scripts and smoke tests.
+      packages: write # Pull the verified image and update its environment tag.
+      id-token: write # Authenticate to GCP using Workload Identity Federation.
     environment:
       name: ${{ inputs.environment }}
-      url: ${{ steps.deploy.outputs.url }}
+      url: ${{ steps.promote.outputs.url }}
     concurrency:
       group: deploy-web-${{ inputs.environment }}
       cancel-in-progress: false
@@ -80,8 +80,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
-          sparse-checkout: .github/scripts
+          sparse-checkout: |
+            .github/scripts
+            apps/web/tests
           persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          package-manager-cache: false
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
@@ -113,7 +119,7 @@ jobs:
           REGION: ${{ vars.GCP_REGION }}
           REPOSITORY: ${{ vars.GAR_REPOSITORY }}
         run: ./.github/scripts/mirror-image.sh
-      - name: Deploy Cloud Run service
+      - name: Deploy candidate without traffic
         id: deploy
         env:
           IMAGE: ${{ steps.artifact.outputs.image }}
@@ -121,9 +127,21 @@ jobs:
           REGION: ${{ vars.GCP_REGION }}
           SERVICE: ${{ vars.CLOUD_RUN_SERVICE }}
           SHA: ${{ needs.verify.outputs.sha }}
-          CANARY_PERCENT: ${{ vars.CANARY_PERCENT }}
-          CANARY_SECONDS: ${{ vars.CANARY_SECONDS }}
-        run: ./.github/scripts/deploy-cloud-run.sh
+        run: bash .github/scripts/deploy-cloud-run.sh deploy
+      - name: Test candidate
+        env:
+          SMOKE_URL: ${{ steps.deploy.outputs.url }}
+          SHA: ${{ needs.verify.outputs.sha }}
+        run: node --test apps/web/tests/smoke.mjs
+      - name: Promote tested revision
+        id: promote
+        env:
+          PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+          REGION: ${{ vars.GCP_REGION }}
+          SERVICE: ${{ vars.CLOUD_RUN_SERVICE }}
+          REVISION: ${{ steps.deploy.outputs.revision }}
+          SHA: ${{ needs.verify.outputs.sha }}
+        run: bash .github/scripts/deploy-cloud-run.sh promote
       - name: Tag deployed image in GHCR
         env:
           SOURCE: ${{ needs.verify.outputs.image }}

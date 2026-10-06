@@ -20,14 +20,11 @@ if [[ -z "${DIGEST:-}" ]]; then
       echo '::error::Release must be a commit SHA or version tag such as v1.2.3' >&2
       exit 1
     fi
-tag="$release"
-if [[ "$tag" != v* ]]; then
-  tag="v$tag"
-fi
-if ! gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" >/dev/null 2>&1; then
-  echo "::error::Git tag $tag was not found" >&2
-  exit 1
-fi
+    tag="v${release#v}"
+    if ! gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" >/dev/null 2>&1; then
+      echo "::error::Git tag $tag was not found" >&2
+      exit 1
+    fi
     SHA="$(gh api "repos/$GITHUB_REPOSITORY/commits/$tag" --jq .sha)"
   fi
 fi
