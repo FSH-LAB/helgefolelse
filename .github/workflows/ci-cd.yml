@@ -99,21 +99,6 @@ jobs:
           severity: HIGH,CRITICAL
           ignore-unfixed: true
 
-  ci-ok:
-    name: ci-ok
-    if: always()
-    needs: [verify, image]
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - name: Require all checks to pass or be skipped
-        env:
-          RESULTS: ${{ join(needs.*.result, ' ') }}
-        run: |
-          for result in $RESULTS; do
-            [[ "$result" == success || "$result" == skipped ]] || exit 1
-          done
-
   publish:
     name: Publish web image
     needs: verify
