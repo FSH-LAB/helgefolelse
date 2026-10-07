@@ -89,7 +89,7 @@ resource "google_artifact_registry_repository" "web" {
   }
 
   cleanup_policies {
-    id     = "keep-wep-latest-5"
+    id     = "keep-web-latest-5"
     action = "KEEP"
 
     most_recent_versions {
