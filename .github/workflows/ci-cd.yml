@@ -36,7 +36,6 @@ jobs:
           package-manager-cache: false
       - run: pnpm install --frozen-lockfile
       - run: pnpm format:check
-      - run: pnpm lint:shell
       - name: Install actionlint
         env:
           VERSION: 1.7.12
@@ -49,8 +48,6 @@ jobs:
           tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP" actionlint
           echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
       - run: pnpm lint:workflows
-      - name: Test infrastructure plan policies
-        run: node --test .github/scripts/infrastructure.test.mjs
       - name: Scan infrastructure configuration
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
@@ -60,16 +57,17 @@ jobs:
           format: table
           exit-code: "1"
           severity: HIGH,CRITICAL
-          trivyignores: .trivyignore.yaml
       - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
         with:
           terraform_version: 1.9.8
           terraform_wrapper: false
       - name: Validate infrastructure without cloud credentials
         run: |
-          terraform -chdir=infra fmt -check -recursive
-          terraform -chdir=infra init -backend=false -input=false -lockfile=readonly
-          terraform -chdir=infra validate
+          terraform fmt -check -recursive infra
+          for root in infra infra/github; do
+            terraform -chdir="$root" init -backend=false -input=false -lockfile=readonly
+            terraform -chdir="$root" validate
+          done
           terraform -chdir=infra test
       - name: Audit workflows with zizmor
         uses: zizmorcore/zizmor-action@cc914d7f3750a2d13d75c7f184a1060aa0e9d482 # v0.6.4
@@ -125,8 +123,6 @@ jobs:
     name: Publish web image
     needs: verify
     if: github.event_name == 'push'
-    outputs:
-      digest: ${{ steps.build.outputs.digest }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -180,40 +176,37 @@ jobs:
     needs: publish
     permissions:
       attestations: read # Verify image provenance.
-      contents: read # Check out trusted deployment scripts.
+      contents: read # Check out Terraform and smoke tests.
       packages: write # Pull the image and update its environment tag.
       id-token: write # Authenticate to GCP using Workload Identity Federation.
     uses: ./.github/workflows/deploy.yml # zizmor: ignore[self-repository] -- actionlint 1.7.12 does not support $/ workflow calls.
     with:
       environment: dev
-      sha: ${{ github.sha }}
-      digest: ${{ needs.publish.outputs.digest }}
+      release: ${{ github.sha }}
 
   deploy-staging:
-    needs: [publish, deploy-dev]
+    needs: deploy-dev
     permissions:
       attestations: read # Verify image provenance.
-      contents: read # Check out trusted deployment scripts.
+      contents: read # Check out Terraform and smoke tests.
       packages: write # Pull the image and update its environment tag.
       id-token: write # Authenticate to GCP using Workload Identity Federation.
     uses: ./.github/workflows/deploy.yml # zizmor: ignore[self-repository] -- actionlint 1.7.12 does not support $/ workflow calls.
     with:
       environment: staging
-      sha: ${{ github.sha }}
-      digest: ${{ needs.publish.outputs.digest }}
+      release: ${{ github.sha }}
 
   deploy-production:
-    needs: [publish, deploy-staging]
+    needs: deploy-staging
     permissions:
       attestations: read # Verify image provenance.
-      contents: read # Check out trusted deployment scripts.
+      contents: read # Check out Terraform and smoke tests.
       packages: write # Pull the image and update its environment tag.
       id-token: write # Authenticate to GCP using Workload Identity Federation.
     uses: ./.github/workflows/deploy.yml # zizmor: ignore[self-repository] -- actionlint 1.7.12 does not support $/ workflow calls.
     with:
       environment: production
-      sha: ${{ github.sha }}
-      digest: ${{ needs.publish.outputs.digest }}
+      release: ${{ github.sha }}
 
   release:
     name: Create release

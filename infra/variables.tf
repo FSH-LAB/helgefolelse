@@ -1,51 +1,5 @@
-variable "project_id" {
-  description = "Globally unique GCP project ID to create or adopt for this environment."
-  type        = string
-}
-
-variable "project_name" {
-  description = "Project display name. Match the current name when importing to avoid renaming."
-  type        = string
-  default     = null
-}
-
-variable "auto_create_network" {
-  description = "Use false for new projects. Match imported projects; changing this creation-time setting can require project replacement."
-  type        = bool
-  default     = true
-}
-
-variable "billing_account_id" {
-  description = "Existing billing account to link to the managed project."
-  type        = string
-
-  validation {
-    condition     = can(regex("^[A-Fa-f0-9]{6}-[A-Fa-f0-9]{6}-[A-Fa-f0-9]{6}$", var.billing_account_id))
-    error_message = "Supply a billing account ID in XXXXXX-XXXXXX-XXXXXX format."
-  }
-}
-
-variable "organization_id" {
-  description = "Parent organization ID, or null when using a folder or a personal account."
-  type        = string
-  default     = null
-}
-
-variable "folder_id" {
-  description = "Existing parent folder ID, mutually exclusive with organization_id."
-  type        = string
-  default     = null
-}
-
-variable "state_bucket_name" {
-  description = "Globally unique state bucket name; defaults to PROJECT_ID-terraform-state."
-  type        = string
-  default     = null
-}
-
 variable "environment" {
-  description = "Deployment environment; use a separate backend for each."
-  type        = string
+  type = string
 
   validation {
     condition     = contains(["dev", "staging", "production"], var.environment)
@@ -53,51 +7,31 @@ variable "environment" {
   }
 }
 
-variable "region" {
-  description = "Must match the location of existing resources when importing."
+variable "project_id" {
+  type = string
+}
+
+variable "project_name" {
+  type = string
+}
+
+variable "folder_id" {
+  type    = string
+  default = null
+}
+
+variable "billing_account_id" {
+  description = "Only needed when creating a project; later changes are ignored."
   type        = string
-  default     = "europe-north2"
+  default     = null
 }
 
-variable "gar_repository" {
+variable "region" {
   type    = string
-  default = "helgefolelse"
-}
-
-variable "cloud_run_service" {
-  type    = string
-  default = "helgefolelse-web"
-}
-
-variable "github_owner" {
-  type    = string
-  default = "FSH-LAB"
+  default = "europe-north2"
 }
 
 variable "github_repository" {
   type    = string
-  default = "helgefolelse"
-}
-
-variable "manage_github" {
-  description = "Manage the GitHub environment, main policy, and variables. Import existing settings first."
-  type        = bool
-  default     = true
-}
-
-variable "enable_infrastructure_ci" {
-  description = "Provision dedicated infrastructure CI identities after adoption and remote-state migration. Approval environments are configured separately by an operator."
-  type        = bool
-  default     = false
-}
-
-variable "reviewer_user_ids" {
-  description = "GitHub numeric user IDs with repository access. Required for managed staging/production."
-  type        = list(number)
-  default     = []
-
-  validation {
-    condition     = length(var.reviewer_user_ids) <= 6 && alltrue([for user_id in var.reviewer_user_ids : user_id > 0 && floor(user_id) == user_id])
-    error_message = "Supply at most six positive integer GitHub user IDs."
-  }
+  default = "FSH-LAB/helgefolelse"
 }

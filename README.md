@@ -21,7 +21,6 @@ Open [http://localhost:3000](http://localhost:3000). Run commands from the repos
 | `pnpm dev`              | Start the development server      |
 | `pnpm build`            | Build the web app for production  |
 | `pnpm lint`             | Run ESLint                        |
-| `pnpm lint:shell`       | Check deployment shell scripts    |
 | `pnpm lint:workflows`   | Check GitHub Actions workflows    |
 | `pnpm typecheck`        | Run TypeScript checks             |
 | `pnpm test`             | Run app unit tests                |
@@ -29,7 +28,7 @@ Open [http://localhost:3000](http://localhost:3000). Run commands from the repos
 | `pnpm format`           | Format supported files            |
 | `pnpm --filter web dev` | Run only the web app's dev script |
 
-The root scripts use Turborepo to run tasks across workspaces. Currently there is one app, `web`; there are no shared packages or separate backend yet. For the local delivery lint commands on macOS, install the CLI tools with `brew install shellcheck actionlint`. CI installs a pinned actionlint version separately.
+The root scripts use Turborepo to run tasks across workspaces. Currently there is one app, `web`; there are no shared packages or separate backend yet. For the local workflow lint command on macOS, install actionlint with `brew install actionlint`. CI installs a pinned actionlint version separately.
 
 Smoke tests live in the web app and check a running server's health, commit SHA, and home page. They use Node's built-in test runner, so CI and deployment need no dependency install to run them:
 
@@ -58,31 +57,30 @@ The command exits with status `1` when a HIGH or CRITICAL finding with an availa
 
 ## Delivery
 
-The `CI/CD` workflow checks pull requests, merge-queue groups, and pushes to `main`. After a successful push-to-main verification, it builds and pushes one image to GHCR, scans that exact image digest with Trivy, and attests it before deploying to `dev`. Staging and production then promote the same verified digest; they do not rebuild it.
+Two workflows, no helper scripts:
 
-### Infrastructure
+```mermaid
+flowchart LR
+  PR[Pull request] --> V[verify + image smoke/scan]
+  M[Push to main] --> P[build, scan, attest image] --> D[dev] --> S[staging] --> Pr[production] --> R[GitHub Release]
+```
 
-[Terraform configuration](infra/README.md) creates the GCP projects, links them to your billing account, and provisions private state buckets, application resources, IAM, and GitHub Environments and deployment variables. Use separate Terraform state per environment (`dev`, `staging`, `production`). There is one configuration and no separate bootstrap module. Existing resources are imported; new environments are provisioned from scratch.
+- **CI/CD** (`ci-cd.yml`) checks PRs and merge-queue groups (lint, types, tests, Terraform validate/test, Trivy, actionlint, zizmor). On `main` it publishes one image to GHCR, scans and attests that digest, then promotes the same digest through `dev`, `staging` and `production`. Staging and production wait for a reviewer.
+- **Deploy** (`deploy.yml`) is called once per environment, or manually to redeploy/roll back. One job:
+  1. Resolves the release (commit SHA or tag) to its GHCR digest and verifies the attestation was signed by `ci-cd.yml` on `main`.
+  2. Runs `terraform apply` for that environment, so infrastructure and app move through the environments together.
+  3. Mirrors the image to the environment's Artifact Registry (digest preserved), deploys a zero-traffic `candidate` revision, smoke tests it, then shifts 100% traffic. A failed smoke test leaves traffic unchanged.
+  4. Tags the GHCR image with the environment name.
 
-Terraform owns infrastructure and IAM. The existing deployment workflow owns application images, revisions, and traffic, so infrastructure applies do not revert releases. CI validates Terraform and runs credential-free mock tests; it does not apply infrastructure changes.
+To roll back, run **Deploy** on `main` with the environment and an older commit SHA or release tag (`vYYYY.M.<run>`).
 
-### Publish and promote
-
-On a push to `main`, the **CI/CD** workflow verifies the commit, builds and pushes one image to GHCR, scans the immutable image digest with Trivy, and creates a signed [build provenance attestation](https://docs.github.com/actions/security-for-github-actions/using-artifact-attestations) only after the scan passes. It then promotes that same digest through `dev`, `staging`, and `production`. Staging and production wait for environment reviewers to approve. Pull requests and merge-queue groups run checks without publishing or deploying.
-
-Every deployment first verifies the image's attestation (signed by `ci-cd.yml` on `main`) and that the image was built from the requested commit, then mirrors it to that environment's Artifact Registry. Cloud Run deploys the revision with zero traffic and a `candidate` tag; the workflow runs the app's smoke tests against that candidate and only shifts 100% of traffic after they pass. Failed tests leave existing service traffic unchanged. The GHCR image is then tagged with the environment name, so the package page shows what runs where. After production, the workflow creates a GitHub Release (`vYYYY.M.<run>`) with generated notes. The deployed service URL appears on its GitHub Environment. You can check a release yourself with `gh attestation verify oci://ghcr.io/<owner>/<repo>-web@<digest> --repo <owner>/<repo>`.
-
-Only two workflows remain: CI/CD and reusable/manual deployment. Image vulnerability checks still gate PRs and releases; there is no scheduled rescan of already-deployed images. PR previews and canary rollouts are not configured. Shell scripts handle signed-release verification, digest-preserving registry mirroring, and Cloud Run operations. Deployment and promotion are separate script calls with the app's smoke tests between them; HTTP assertions belong to the app tests.
-
-When migrating from the previous setup, remove unused `CANARY_PERCENT` and `CANARY_SECONDS` GitHub variables and the deployer's `roles/monitoring.viewer` grant. Remove existing preview Cloud Run tags/services, preview identities and their IAM grants, and the `preview` GitHub Environment if no longer used. The Terraform configuration restricts each WIF provider to its matching environment. Adopting Terraform or deleting workflows does not remove unmanaged cloud resources or existing previews.
-
-To redeploy or roll back, open **Deploy web** in GitHub Actions on `main`, choose the environment, and enter either a commit SHA or a version tag (for example `v1.2.3`). The tag must point to a commit on `main` that CI has already published; the workflow resolves it to that commit's image, verifies its provenance, and deploys by digest. A version without the `v` prefix also resolves to a matching `v`-prefixed tag. To retry a failed automatic deployment after correcting IAM, use **Re-run failed jobs** on its CI run.
+Terraform owns infrastructure; the workflow owns image, revisions and traffic. See [infra/README.md](infra/README.md).
 
 ## Structure
 
 - `apps/web/src/app/` - Next.js routes, layout, and the tide visualization.
 - `apps/web/src/lib/` - the weekend calculation and display copy.
-- `infra/` - Terraform projects, billing linkage, state storage, application infrastructure, migration examples, and mock tests.
+- `infra/` - Terraform for each GCP environment (`environments/*.tfvars`) and `infra/github/` for GitHub environments.
 - `pnpm-workspace.yaml` - workspace membership and dependency build settings.
 - `turbo.json` - task orchestration and build caching.
 

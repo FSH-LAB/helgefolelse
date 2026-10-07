@@ -1,39 +1,39 @@
 locals {
-  repository = "${var.github_owner}/${var.github_repository}"
   services = toset([
+    "artifactregistry.googleapis.com",
+    "cloudresourcemanager.googleapis.com",
     "iam.googleapis.com",
     "iamcredentials.googleapis.com",
-    "sts.googleapis.com",
-    "artifactregistry.googleapis.com",
     "run.googleapis.com",
     "storage.googleapis.com",
-    "cloudresourcemanager.googleapis.com",
+    "sts.googleapis.com",
   ])
-  github_variables = {
-    GCP_PROJECT_ID             = var.project_id
-    GCP_REGION                 = var.region
-    GAR_REPOSITORY             = google_artifact_registry_repository.web.repository_id
-    CLOUD_RUN_SERVICE          = google_cloud_run_v2_service.web.name
-    GCP_WIF_PROVIDER           = google_iam_workload_identity_pool_provider.github.name
-    GCP_DEPLOY_SERVICE_ACCOUNT = google_service_account.deployer.email
-  }
+
+  # The deploy workflow runs Terraform as this account. It deliberately cannot
+  # change project IAM, service accounts or OIDC trust: those need an operator.
+  deployer_roles = toset([
+    "roles/viewer",
+    "roles/iam.securityReviewer",
+    "roles/iam.workloadIdentityPoolViewer",
+    "roles/artifactregistry.admin",
+    "roles/run.admin",
+    "roles/serviceusage.serviceUsageAdmin",
+    "roles/storage.admin",
+  ])
 }
 
 resource "google_project" "environment" {
   project_id          = var.project_id
-  name                = coalesce(var.project_name, "Helgefolelse ${var.environment}")
-  auto_create_network = var.auto_create_network
-  billing_account     = var.billing_account_id
-  org_id              = var.organization_id
+  name                = var.project_name
   folder_id           = var.folder_id
+  billing_account     = var.billing_account_id
+  auto_create_network = false
   deletion_policy     = "PREVENT"
 
   lifecycle {
     prevent_destroy = true
-    precondition {
-      condition     = var.organization_id == null || var.folder_id == null
-      error_message = "Specify organization_id or folder_id, not both."
-    }
+    # Billing is linked once by an operator; adopted projects keep their creation-time network setting.
+    ignore_changes = [billing_account, auto_create_network]
   }
 }
 
@@ -47,7 +47,7 @@ resource "google_project_service" "required" {
 
 resource "google_storage_bucket" "state" {
   project                     = google_project.environment.project_id
-  name                        = coalesce(var.state_bucket_name, "${var.project_id}-terraform-state")
+  name                        = "${var.project_id}-terraform-state"
   location                    = var.region
   uniform_bucket_level_access = true
   public_access_prevention    = "enforced"
@@ -55,19 +55,6 @@ resource "google_storage_bucket" "state" {
 
   versioning {
     enabled = true
-  }
-
-  dynamic "lifecycle_rule" {
-    for_each = var.enable_infrastructure_ci ? [1] : []
-    content {
-      action {
-        type = "Delete"
-      }
-      condition {
-        age            = 7
-        matches_prefix = ["ci-plans/"]
-      }
-    }
   }
 
   depends_on = [google_project_service.required]
@@ -80,7 +67,7 @@ resource "google_storage_bucket" "state" {
 resource "google_artifact_registry_repository" "web" {
   project       = google_project.environment.project_id
   location      = var.region
-  repository_id = var.gar_repository
+  repository_id = "helgefolelse"
   format        = "DOCKER"
   description   = "Docker images for the Helgef\u00f8lelse web app."
 
@@ -144,7 +131,7 @@ resource "google_service_account" "runtime" {
 
 resource "google_cloud_run_v2_service" "web" {
   project              = google_project.environment.project_id
-  name                 = var.cloud_run_service
+  name                 = "helgefolelse-web"
   location             = var.region
   deletion_protection  = true
   ingress              = "INGRESS_TRAFFIC_ALL"
@@ -166,6 +153,7 @@ resource "google_cloud_run_v2_service" "web" {
 
   lifecycle {
     prevent_destroy = true
+    # Releases (image, GIT_SHA, revisions, traffic) are owned by the deploy workflow.
     ignore_changes = [
       template[0].containers[0].image,
       template[0].containers[0].env,
@@ -178,20 +166,12 @@ resource "google_cloud_run_v2_service" "web" {
   }
 }
 
-resource "google_cloud_run_v2_service_iam_member" "deployer" {
-  project  = google_project.environment.project_id
-  location = var.region
-  name     = google_cloud_run_v2_service.web.name
-  role     = "roles/run.developer"
-  member   = "serviceAccount:${google_service_account.deployer.email}"
-}
+resource "google_project_iam_member" "deployer" {
+  for_each = local.deployer_roles
 
-resource "google_artifact_registry_repository_iam_member" "deployer" {
-  project    = google_project.environment.project_id
-  location   = var.region
-  repository = google_artifact_registry_repository.web.name
-  role       = "roles/artifactregistry.writer"
-  member     = "serviceAccount:${google_service_account.deployer.email}"
+  project = google_project.environment.project_id
+  role    = each.value
+  member  = "serviceAccount:${google_service_account.deployer.email}"
 }
 
 resource "google_service_account_iam_member" "runtime_user" {
@@ -223,7 +203,7 @@ resource "google_iam_workload_identity_pool_provider" "github" {
     "attribute.ref"         = "assertion.ref"
     "attribute.environment" = "assertion.environment"
   }
-  attribute_condition = "assertion.repository == '${local.repository}' && assertion.ref == 'refs/heads/main' && assertion.environment == '${var.environment}'"
+  attribute_condition = "assertion.repository == '${var.github_repository}' && assertion.ref == 'refs/heads/main' && assertion.environment == '${var.environment}'"
 
   oidc {
     issuer_uri = "https://token.actions.githubusercontent.com"
@@ -234,48 +214,4 @@ resource "google_service_account_iam_member" "github_deployer" {
   service_account_id = google_service_account.deployer.name
   role               = "roles/iam.workloadIdentityUser"
   member             = "principalSet://iam.googleapis.com/${google_iam_workload_identity_pool.github.name}/attribute.environment/${var.environment}"
-}
-
-resource "github_repository_environment" "web" {
-  count = var.manage_github ? 1 : 0
-
-  repository  = var.github_repository
-  environment = var.environment
-
-  dynamic "reviewers" {
-    for_each = var.environment == "dev" ? [] : [var.reviewer_user_ids]
-    content {
-      users = reviewers.value
-    }
-  }
-
-  deployment_branch_policy {
-    protected_branches     = false
-    custom_branch_policies = true
-  }
-
-  lifecycle {
-    prevent_destroy = true
-    precondition {
-      condition     = var.environment == "dev" || length(var.reviewer_user_ids) > 0
-      error_message = "Managed staging and production environments must have required reviewers."
-    }
-  }
-}
-
-resource "github_repository_environment_deployment_policy" "main" {
-  count = var.manage_github ? 1 : 0
-
-  repository     = var.github_repository
-  environment    = github_repository_environment.web[0].environment
-  branch_pattern = "main"
-}
-
-resource "github_actions_environment_variable" "deployment" {
-  for_each = var.manage_github ? local.github_variables : {}
-
-  repository    = var.github_repository
-  environment   = github_repository_environment.web[0].environment
-  variable_name = each.key
-  value         = each.value
 }

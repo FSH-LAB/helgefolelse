@@ -11,6 +11,7 @@ node_modules
 *.tfstate.*
 *.tfplan
 *.tfvars
+!infra/environments/*.tfvars
 *.tfvars.json
 *.tfbackend
 infra/imports.tf

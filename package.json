@@ -9,7 +9,6 @@
     "dev": "turbo run dev",
     "build": "turbo run build",
     "lint": "turbo run lint",
-    "lint:shell": "shellcheck .github/scripts/*.sh infra/scripts/*.sh",
     "lint:workflows": "actionlint .github/workflows/*.yml",
     "typecheck": "turbo run typecheck",
     "test": "turbo run test",
