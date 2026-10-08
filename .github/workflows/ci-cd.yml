@@ -123,6 +123,8 @@ jobs:
     name: Publish web image
     needs: verify
     if: github.event_name == 'push'
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -183,9 +185,10 @@ jobs:
     with:
       environment: dev
       release: ${{ github.sha }}
+      digest: ${{ needs.publish.outputs.digest }}
 
   deploy-staging:
-    needs: deploy-dev
+    needs: [publish, deploy-dev]
     permissions:
       attestations: read # Verify image provenance.
       contents: read # Check out Terraform and smoke tests.
@@ -195,9 +198,10 @@ jobs:
     with:
       environment: staging
       release: ${{ github.sha }}
+      digest: ${{ needs.publish.outputs.digest }}
 
   deploy-production:
-    needs: deploy-staging
+    needs: [publish, deploy-staging]
     permissions:
       attestations: read # Verify image provenance.
       contents: read # Check out Terraform and smoke tests.
@@ -207,6 +211,7 @@ jobs:
     with:
       environment: production
       release: ${{ github.sha }}
+      digest: ${{ needs.publish.outputs.digest }}
 
   release:
     name: Create release

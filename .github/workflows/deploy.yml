@@ -9,6 +9,10 @@ on:
       release:
         required: true
         type: string
+      digest:
+        required: false
+        type: string
+        default: ""
   workflow_dispatch:
     inputs:
       environment:
@@ -75,11 +79,17 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE: ${{ inputs.release }}
+          EXPECTED_DIGEST: ${{ inputs.digest }}
         run: |
           [[ "$RELEASE" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || { echo "::error::Invalid release: $RELEASE"; exit 1; }
           image="ghcr.io/${GITHUB_REPOSITORY,,}-web"
           sha="$(gh api "repos/$GITHUB_REPOSITORY/commits/$RELEASE" --jq .sha)"
-          digest="$(docker buildx imagetools inspect "$image:$sha" --format '{{ .Manifest.Digest }}')"
+          if [[ -n "$EXPECTED_DIGEST" ]]; then
+            [[ "$EXPECTED_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::Invalid image digest"; exit 1; }
+            digest="$EXPECTED_DIGEST"
+          else
+            digest="$(docker buildx imagetools inspect "$image:$sha" --format '{{ .Manifest.Digest }}')"
+          fi
           # Only images built and attested by CI on main are deployable.
           gh attestation verify "oci://$image@$digest" --repo "$GITHUB_REPOSITORY" \
             --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/ci-cd.yml" \
