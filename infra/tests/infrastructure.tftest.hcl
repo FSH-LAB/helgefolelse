@@ -26,6 +26,11 @@ run "protects_core_resources" {
   }
 
   assert {
+    condition     = google_storage_bucket.state.location == local.region && google_artifact_registry_repository.web.location == local.region && google_cloud_run_v2_service.web.location == local.region
+    error_message = "The state bucket, registry, and Cloud Run service must use the configured region."
+  }
+
+  assert {
     condition     = google_cloud_run_v2_service.web.deletion_protection && google_cloud_run_v2_service.web.invoker_iam_disabled && google_cloud_run_v2_service.web.template[0].containers[0].ports[0].container_port == 8080
     error_message = "Cloud Run must stay public, deletion-protected and serve on port 8080."
   }

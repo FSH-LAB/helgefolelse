@@ -1,4 +1,6 @@
 locals {
+  region = "europe-north2"
+
   services = toset([
     "artifactregistry.googleapis.com",
     "cloudresourcemanager.googleapis.com",
@@ -48,7 +50,7 @@ resource "google_project_service" "required" {
 resource "google_storage_bucket" "state" {
   project                     = google_project.environment.project_id
   name                        = "${var.project_id}-terraform-state"
-  location                    = var.region
+  location                    = local.region
   uniform_bucket_level_access = true
   public_access_prevention    = "enforced"
   force_destroy               = false
@@ -66,7 +68,7 @@ resource "google_storage_bucket" "state" {
 
 resource "google_artifact_registry_repository" "web" {
   project       = google_project.environment.project_id
-  location      = var.region
+  location      = local.region
   repository_id = "helgefolelse"
   format        = "DOCKER"
   description   = "Docker images for the Helgef\u00f8lelse web app."
@@ -132,7 +134,7 @@ resource "google_service_account" "runtime" {
 resource "google_cloud_run_v2_service" "web" {
   project              = google_project.environment.project_id
   name                 = "helgefolelse-web"
-  location             = var.region
+  location             = local.region
   deletion_protection  = true
   ingress              = "INGRESS_TRAFFIC_ALL"
   invoker_iam_disabled = true

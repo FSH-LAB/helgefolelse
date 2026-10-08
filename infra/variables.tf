@@ -26,11 +26,6 @@ variable "billing_account_id" {
   default     = null
 }
 
-variable "region" {
-  type    = string
-  default = "europe-north2"
-}
-
 variable "github_repository" {
   type    = string
   default = "FSH-LAB/helgefolelse"

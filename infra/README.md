@@ -2,6 +2,8 @@
 
 The deployment workflows apply one Terraform configuration for each environment (`dev`, `staging`, `production`). A separate root manages GitHub environments and deployment variables.
 
+All environments use `europe-north2`. The region is fixed in Terraform to match the deployment workflow and registry endpoint.
+
 | Root            | Manages                                                                                       | State                                                               |
 | --------------- | --------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
 | `infra/`        | GCP project, APIs, state bucket, Artifact Registry, Cloud Run, service accounts, IAM and OIDC | `gs://<project>-terraform-state/helgefolelse/<env>`                 |
@@ -25,6 +27,41 @@ terraform -chdir=infra plan \
   -var-file="environments/$ENV.tfvars" -out="$ENV.tfplan"
 terraform -chdir=infra apply "$ENV.tfplan"
 ```
+
+## Fresh project bootstrap
+
+The GCS backend must exist before Terraform can initialize. For a fresh project in one of the three supported environment slots, create the project and state bucket once, then import them so Terraform can manage them:
+
+```sh
+ENV=dev # staging or production
+PROJECT=your-project-id # also set this in infra/environments/$ENV.tfvars
+PROJECT_NAME="Helgefolelse $ENV"
+FOLDER_ID=your-folder-id
+BILLING_ACCOUNT_ID=XXXXXX-XXXXXX-XXXXXX
+REGION=europe-north2
+
+gcloud projects create "$PROJECT" --name="$PROJECT_NAME" --folder="$FOLDER_ID"
+gcloud billing projects link "$PROJECT" --billing-account="$BILLING_ACCOUNT_ID"
+gcloud services enable storage.googleapis.com --project="$PROJECT"
+gcloud storage buckets create "gs://$PROJECT-terraform-state" \
+  --project="$PROJECT" --location="$REGION" \
+  --uniform-bucket-level-access --public-access-prevention
+
+export TF_DATA_DIR="$PWD/infra/.terraform/bootstrap-$ENV"
+terraform -chdir=infra init \
+  -backend-config="bucket=$PROJECT-terraform-state" \
+  -backend-config="prefix=helgefolelse/$ENV"
+terraform -chdir=infra import -var-file="environments/$ENV.tfvars" \
+  google_project.environment "$PROJECT"
+terraform -chdir=infra import -var-file="environments/$ENV.tfvars" \
+  'google_project_service.required["storage.googleapis.com"]' "$PROJECT/storage.googleapis.com"
+terraform -chdir=infra import -var-file="environments/$ENV.tfvars" \
+  google_storage_bucket.state "$PROJECT-terraform-state"
+terraform -chdir=infra plan -var-file="environments/$ENV.tfvars" -out="$ENV.tfplan"
+terraform -chdir=infra apply "$ENV.tfplan"
+```
+
+Review the plan before applying. Then update that environment's project ID and number in `infra/github/main.tf` and apply the GitHub root. Existing environments should use their existing GCS state; do not bootstrap them as fresh projects.
 
 ## GitHub settings
 
