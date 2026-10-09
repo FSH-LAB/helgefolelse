@@ -1,6 +1,9 @@
 **/node_modules/
 **/.next/
 **/.turbo/
+**/.terraform/
+**/*.tfstate*
+**/*.tfplan
 **/coverage/
 /out/
 pnpm-lock.yaml

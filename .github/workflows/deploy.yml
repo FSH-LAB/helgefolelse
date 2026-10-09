@@ -1,4 +1,4 @@
-name: Deploy web
+name: Deploy
 
 on:
   workflow_call:
@@ -6,12 +6,13 @@ on:
       environment:
         required: true
         type: string
-      sha:
+      release:
         required: true
         type: string
       digest:
-        required: true
+        required: false
         type: string
+        default: ""
   workflow_dispatch:
     inputs:
       environment:
@@ -20,79 +21,88 @@ on:
         type: choice
         options: [dev, staging, production]
       release:
-        description: Commit SHA or version tag (for example v1.2.3) to (re)deploy
+        description: Commit SHA or release tag (for example v2026.10.42) to deploy or roll back to
         required: true
         type: string
 
 permissions:
-  attestations: read # Verify published image provenance.
-  contents: read # Check out scripts and validate commit ancestry.
-  packages: read # Resolve and pull images from GHCR.
+  contents: read
 
 jobs:
-  verify:
-    name: Verify release
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    concurrency:
-      group: verify-release-${{ inputs.environment }}-${{ github.run_id }}
-      cancel-in-progress: false
-    outputs:
-      sha: ${{ steps.release.outputs.sha }}
-      image: ${{ steps.release.outputs.image }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.sha }}
-          fetch-depth: 0
-          sparse-checkout: .github/scripts
-          persist-credentials: false
-      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Verify release provenance
-        id: release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          SHA: ${{ inputs.sha }}
-          RELEASE: ${{ inputs.release }}
-          DIGEST: ${{ inputs.digest }}
-        run: ./.github/scripts/verify-release.sh
-
   deploy:
-    name: Deploy release
-    needs: verify
+    name: Deploy to ${{ inputs.environment }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
-      contents: read # Check out trusted scripts and smoke tests.
-      packages: write # Pull the verified image and update its environment tag.
-      id-token: write # Authenticate to GCP using Workload Identity Federation.
+      attestations: read # Verify image provenance.
+      contents: read # Check out Terraform and smoke tests.
+      packages: write # Pull the image and move its environment tag.
+      id-token: write # Authenticate to GCP with Workload Identity Federation.
     environment:
       name: ${{ inputs.environment }}
       url: ${{ steps.promote.outputs.url }}
     concurrency:
-      group: deploy-web-${{ inputs.environment }}
+      group: deploy-${{ inputs.environment }}
       cancel-in-progress: false
+    env:
+      ENVIRONMENT: ${{ inputs.environment }}
+      PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      REGION: europe-north2
+      SERVICE: helgefolelse-web
+      CLOUDSDK_CORE_PROJECT: ${{ vars.GCP_PROJECT_ID }}
+      CLOUDSDK_RUN_REGION: europe-north2
+      CLOUDSDK_CORE_DISABLE_PROMPTS: "1"
+      TF_IN_AUTOMATION: "true"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.sha }}
           sparse-checkout: |
-            .github/scripts
+            infra
             apps/web/tests
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version-file: .nvmrc
           package-manager-cache: false
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
+        with:
+          terraform_version: 1.9.8
+          terraform_wrapper: false
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve and verify release
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE: ${{ inputs.release }}
+          EXPECTED_DIGEST: ${{ inputs.digest }}
+        run: |
+          [[ "$RELEASE" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || { echo "::error::Invalid release: $RELEASE"; exit 1; }
+          image="ghcr.io/${GITHUB_REPOSITORY,,}-web"
+          sha="$(gh api "repos/$GITHUB_REPOSITORY/commits/$RELEASE" --jq .sha)"
+          if [[ -n "$EXPECTED_DIGEST" ]]; then
+            [[ "$EXPECTED_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::Invalid image digest"; exit 1; }
+            digest="$EXPECTED_DIGEST"
+          else
+            digest="$(docker buildx imagetools inspect "$image:$sha" --format '{{ .Manifest.Digest }}')"
+          fi
+          # Only images built and attested by CI on main are deployable.
+          gh attestation verify "oci://$image@$digest" --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/ci-cd.yml" \
+            --source-ref refs/heads/main --deny-self-hosted-runners
+          revision="$(docker buildx imagetools inspect "$image@$digest" --format '{{ json .Image }}' |
+            jq -er 'if has("config") then . else .["linux/amd64"] end |
+              .config.Labels["org.opencontainers.image.revision"]')"
+          if [[ "$revision" != "$sha" ]]; then
+            echo "::error::Image revision $revision does not match requested commit $sha" >&2
+            exit 1
+          fi
+          printf 'sha=%s\nimage=%s@%s\n' "$sha" "$image" "$digest" >> "$GITHUB_OUTPUT"
+
       - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
         id: auth
         with:
@@ -103,47 +113,58 @@ jobs:
       - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
-          registry: ${{ vars.GCP_REGION }}-docker.pkg.dev
+          registry: europe-north2-docker.pkg.dev
           username: oauth2accesstoken
           password: ${{ steps.auth.outputs.access_token }}
-      - name: Install Skopeo
+
+      - name: Apply infrastructure
         run: |
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends skopeo
+          terraform -chdir=infra init -input=false -lockfile=readonly \
+            -backend-config="bucket=$PROJECT_ID-terraform-state" \
+            -backend-config="prefix=helgefolelse/$ENVIRONMENT"
+          terraform -chdir=infra apply -input=false -auto-approve -lock-timeout=5m \
+            -var-file="environments/$ENVIRONMENT.tfvars"
+
       - name: Mirror image to Artifact Registry
-        id: artifact
+        id: mirror
         env:
-          SOURCE: ${{ needs.verify.outputs.image }}
-          SHA: ${{ needs.verify.outputs.sha }}
-          PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
-          REGION: ${{ vars.GCP_REGION }}
-          REPOSITORY: ${{ vars.GAR_REPOSITORY }}
-        run: ./.github/scripts/mirror-image.sh
+          IMAGE: ${{ steps.release.outputs.image }}
+          SHA: ${{ steps.release.outputs.sha }}
+        run: |
+          command -v skopeo > /dev/null || { sudo apt-get update && sudo apt-get install --yes --no-install-recommends skopeo; }
+          target="$REGION-docker.pkg.dev/$PROJECT_ID/helgefolelse/web"
+          # --preserve-digests fails rather than rewriting manifests, so Cloud Run runs the attested digest.
+          skopeo copy --all --preserve-digests --authfile "$HOME/.docker/config.json" \
+            "docker://$IMAGE" "docker://$target:$SHA"
+          echo "image=$target@${IMAGE#*@}" >> "$GITHUB_OUTPUT"
+
       - name: Deploy candidate without traffic
-        id: deploy
+        id: candidate
         env:
-          IMAGE: ${{ steps.artifact.outputs.image }}
-          PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
-          REGION: ${{ vars.GCP_REGION }}
-          SERVICE: ${{ vars.CLOUD_RUN_SERVICE }}
-          SHA: ${{ needs.verify.outputs.sha }}
-        run: bash .github/scripts/deploy-cloud-run.sh deploy
-      - name: Test candidate
+          IMAGE: ${{ steps.mirror.outputs.image }}
+          SHA: ${{ steps.release.outputs.sha }}
+        run: |
+          gcloud run deploy "$SERVICE" --image "$IMAGE" --no-traffic --tag candidate \
+            --update-env-vars "GIT_SHA=$SHA"
+          gcloud run services describe "$SERVICE" --format=json |
+            jq -er '.status.traffic[] | select(.tag == "candidate") |
+              "url=\(.url)\nrevision=\(.revisionName)"' >> "$GITHUB_OUTPUT"
+
+      - name: Smoke test candidate
         env:
-          SMOKE_URL: ${{ steps.deploy.outputs.url }}
-          SHA: ${{ needs.verify.outputs.sha }}
+          SMOKE_URL: ${{ steps.candidate.outputs.url }}
+          SHA: ${{ steps.release.outputs.sha }}
         run: node --test apps/web/tests/smoke.mjs
-      - name: Promote tested revision
+
+      - name: Promote candidate
         id: promote
         env:
-          PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
-          REGION: ${{ vars.GCP_REGION }}
-          SERVICE: ${{ vars.CLOUD_RUN_SERVICE }}
-          REVISION: ${{ steps.deploy.outputs.revision }}
-          SHA: ${{ needs.verify.outputs.sha }}
-        run: bash .github/scripts/deploy-cloud-run.sh promote
-      - name: Tag deployed image in GHCR
+          REVISION: ${{ steps.candidate.outputs.revision }}
+        run: |
+          gcloud run services update-traffic "$SERVICE" --to-revisions "$REVISION=100"
+          echo "url=$(gcloud run services describe "$SERVICE" --format='value(status.url)')" >> "$GITHUB_OUTPUT"
+
+      - name: Tag image with environment
         env:
-          SOURCE: ${{ needs.verify.outputs.image }}
-          ENVIRONMENT: ${{ inputs.environment }}
-        run: docker buildx imagetools create --tag "${SOURCE%@*}:$ENVIRONMENT" "$SOURCE"
+          IMAGE: ${{ steps.release.outputs.image }}
+        run: docker buildx imagetools create --tag "${IMAGE%@*}:$ENVIRONMENT" "$IMAGE"
