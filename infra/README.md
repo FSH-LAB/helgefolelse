@@ -11,6 +11,12 @@ All environments use `europe-north2`. The region is fixed in Terraform to match 
 
 Terraform owns infrastructure; the deploy workflow owns the image, `GIT_SHA`, revisions and traffic. Those release fields are ignored by Terraform. CI cannot change project IAM, service accounts or OIDC trust, so those changes require an operator. Deletion protection is enabled on core resources.
 
+The deployer can write state and lock objects only under `helgefolelse/<env>/`. It cannot write the operator-owned `helgefolelse/github/` prefix or change bucket IAM/settings. Project read roles still allow reading state; this is write isolation, not confidentiality isolation.
+
+To roll out this permission boundary, pause deployments and apply the GCP root with operator credentials in each environment. The plan must add the conditional bucket grant and remove the deployer's project-wide `roles/storage.admin` grant. Verify no other inherited or bucket grants allow that deployer to write outside its prefix before resuming CD. CI cannot apply this IAM change itself.
+
+`auto_create_network = false` only affects projects created directly by Terraform. Imported projects retain their creation-time value; changing it can force replacement, so it is ignored. Audit existing default networks and firewall rules separately rather than replacing projects.
+
 ## Manual GCP changes
 
 Use this for changes the CI identity cannot apply. Authenticate with `gcloud auth application-default login`, choose an environment, and review the saved plan before applying. Do not run it while that environment is deploying.
@@ -91,6 +97,29 @@ REGION=europe-north2
 
 gcloud projects create "$PROJECT" --name="$PROJECT_NAME" --folder="$FOLDER_ID"
 gcloud billing projects link "$PROJECT" --billing-account="$BILLING_ACCOUNT_ID"
+gcloud services enable compute.googleapis.com --project="$PROJECT"
+```
+
+Before adding workloads to this fresh project, inspect its networks. If a `default` network exists, remove its firewall rules and then the network; if either deletion fails because of dependencies, stop and investigate rather than proceeding:
+
+```sh
+gcloud compute networks list --project="$PROJECT"
+gcloud compute firewall-rules list --project="$PROJECT" --filter='network:default'
+```
+
+For a fresh project with a default network, run:
+
+```sh
+for rule in $(gcloud compute firewall-rules list --project="$PROJECT" --filter="network=https://www.googleapis.com/compute/v1/projects/$PROJECT/global/networks/default" --format='value(name)'); do
+  gcloud compute firewall-rules delete "$rule" --project="$PROJECT"
+done
+gcloud compute networks delete default --project="$PROJECT"
+```
+
+Verify the default network is absent before continuing (skip deletion if it was never created):
+
+```sh
+gcloud compute networks list --project="$PROJECT"
 gcloud services enable storage.googleapis.com --project="$PROJECT"
 gcloud storage buckets create "gs://$PROJECT-terraform-state" \
   --project="$PROJECT" --location="$REGION" \

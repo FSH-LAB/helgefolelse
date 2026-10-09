@@ -17,7 +17,7 @@ run "protects_core_resources" {
 
   assert {
     condition     = google_project.environment.deletion_policy == "PREVENT" && !google_project.environment.auto_create_network
-    error_message = "Projects must be deletion-protected and created without a default network."
+    error_message = "Projects must be deletion-protected and request no default network on Terraform creation; imports require a separate network audit."
   }
 
   assert {
@@ -45,8 +45,13 @@ run "deployer_cannot_escalate" {
   command = plan
 
   assert {
-    condition     = length(setintersection(local.deployer_roles, ["roles/owner", "roles/editor", "roles/resourcemanager.projectIamAdmin", "roles/iam.serviceAccountAdmin", "roles/iam.workloadIdentityPoolAdmin"])) == 0
+    condition     = length(setintersection(local.deployer_roles, ["roles/owner", "roles/editor", "roles/resourcemanager.projectIamAdmin", "roles/iam.serviceAccountAdmin", "roles/iam.workloadIdentityPoolAdmin", "roles/storage.admin"])) == 0
     error_message = "CI must not be able to change its own IAM or OIDC trust."
+  }
+
+  assert {
+    condition     = google_storage_bucket_iam_member.deployer_state.role == "roles/storage.objectAdmin" && google_storage_bucket_iam_member.deployer_state.condition[0].expression == "resource.name.startsWith('projects/_/buckets/test-project-terraform-state/objects/helgefolelse/dev/')"
+    error_message = "CI state writes must be restricted to its environment prefix, excluding the operator-owned GitHub state."
   }
 }
 

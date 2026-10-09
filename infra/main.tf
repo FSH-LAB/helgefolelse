@@ -20,7 +20,6 @@ locals {
     "roles/artifactregistry.admin",
     "roles/run.admin",
     "roles/serviceusage.serviceUsageAdmin",
-    "roles/storage.admin",
   ])
 }
 
@@ -174,6 +173,17 @@ resource "google_project_iam_member" "deployer" {
   project = google_project.environment.project_id
   role    = each.value
   member  = "serviceAccount:${google_service_account.deployer.email}"
+}
+
+resource "google_storage_bucket_iam_member" "deployer_state" {
+  bucket = google_storage_bucket.state.name
+  role   = "roles/storage.objectAdmin"
+  member = "serviceAccount:${google_service_account.deployer.email}"
+
+  condition {
+    title      = "environment-state-only"
+    expression = "resource.name.startsWith('projects/_/buckets/${google_storage_bucket.state.name}/objects/helgefolelse/${var.environment}/')"
+  }
 }
 
 resource "google_service_account_iam_member" "runtime_user" {
